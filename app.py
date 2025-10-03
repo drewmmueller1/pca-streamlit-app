@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 
 # Title and instructions
-st.title("PCA Goodpaster Lab Data")
+st.title("PCA Visualization App for Lab Data")
 st.markdown("""
 Upload a CSV file with:
 - Numerical columns for features (e.g., measurements).
@@ -38,6 +38,9 @@ if uploaded_file is not None:
     # New: Option to transpose dataset
     st.sidebar.header("Data Prep Options")
     transpose_data = st.sidebar.checkbox("Transpose Dataset (if samples are in columns)", value=False, help="Swaps rows and columns. Use if your data has samples as columns and features as rows (e.g., wavenumbers in first column).")
+    
+    # New: SNV Standardization option
+    apply_snv = st.sidebar.checkbox("Apply SNV Standardization", value=False, help="Standard Normal Variate: Row-wise normalization (mean=0, std=1 per sample). Ideal for spectroscopy.")
     
     if transpose_data:
         # Assume first col is features (e.g., wavenumber), rest are samples
@@ -67,6 +70,20 @@ if uploaded_file is not None:
     if X.empty:
         st.error("No numerical columns found for PCA. Ensure your CSV has numeric feature columns.")
         st.stop()
+    
+    # Apply SNV if checked (row-wise normalization)
+    if apply_snv:
+        X_snv = np.zeros_like(X)
+        for i in range(X.shape[0]):
+            row_mean = np.mean(X.iloc[i])
+            row_std = np.std(X.iloc[i])
+            if row_std > 0:
+                X_snv[i] = (X.iloc[i] - row_mean) / row_std
+            else:
+                X_snv[i] = X.iloc[i]  # Skip if zero variance
+                st.warning(f"Row {i+1} has zero variance—SNV skipped for it.")
+        X = pd.DataFrame(X_snv, columns=X.columns, index=X.index)
+        st.success("SNV standardization applied (row-wise).")
     
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
