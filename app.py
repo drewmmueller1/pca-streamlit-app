@@ -10,12 +10,13 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 
 # Title and instructions
-st.title("PCA Visualization App for Lab Data")
+st.title("PCA Goodpaster Lab Data")
 st.markdown("""
 Upload a CSV file with:
 - Numerical columns for features (e.g., measurements).
-- A 'label' column for coloring points (categorical, e.g., 'group1', 'group2').
-The app computes PCA on the features and generates interactive plots.
+- Data can be uploaded row-wise or column-wise with the following options:
+  - If row-wise: Each row is a sample, and the first column is a 'label' column. Column 1 row 1 must be labeled "label"
+  - If column-wise: Each column is a sample, and the first row is a 'label' row. Column 1 must be the variables (i.e. wavelengths).
 """)
 
 # File uploader (required)
