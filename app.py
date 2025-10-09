@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -377,7 +377,6 @@ if X_pca_2d_global is not None and (run_lda or run_knn):
     if label_mode == "Default Labels":
         X_selected = X_pca_2d_global
         y_selected = y_global
-        unique_y = sorted(y_selected.unique())
         title_suffix = " (Multi-class)"
     else:
         if not selected_for_a or not selected_for_b:
@@ -388,31 +387,34 @@ if X_pca_2d_global is not None and (run_lda or run_knn):
         mask_selected = mask_group_a | mask_group_b
         X_selected = X_pca_2d_global[mask_selected]
         y_selected = np.where(mask_group_a[mask_selected], 0, 1) # Binary: 0 for Group A, 1 for Group B
-        unique_y = [rename_a, rename_b]
         title_suffix = ""
+    # Encode labels for consistent handling
+    le = LabelEncoder()
+    y_encoded = le.fit_transform(y_selected)
+    unique_y = le.classes_
     if split_data:
-        X_train, X_test, y_train, y_test = train_test_split(
-            X_selected, y_selected, test_size=test_size, random_state=42, stratify=y_selected
+        X_train, X_test, y_train_enc, y_test_enc = train_test_split(
+            X_selected, y_encoded, test_size=test_size, random_state=42, stratify=y_encoded
         )
     else:
-        X_train, X_test, y_train, y_test = X_selected, X_selected, y_selected, y_selected
+        X_train, X_test, y_train_enc, y_test_enc = X_selected, X_selected, y_encoded, y_encoded
     if run_lda:
         if optimize_lda:
             param_grid_lda = {'solver': ['svd', 'lsqr', 'eigen']}
             lda_grid = GridSearchCV(LDA(), param_grid_lda, cv=5)
-            lda_grid.fit(X_train, y_train)
+            lda_grid.fit(X_train, y_train_enc)
             best_lda = lda_grid.best_estimator_
             best_params_lda = lda_grid.best_params_
             st.write(f"**Optimized LDA Parameters:** {best_params_lda}")
         else:
             best_lda = LDA()
-            best_lda.fit(X_train, y_train)
+            best_lda.fit(X_train, y_train_enc)
             best_params_lda = {'solver': 'svd'}
             st.write(f"**LDA Parameters:** {best_params_lda}")
         y_pred_lda = best_lda.predict(X_test)
-        acc_lda = accuracy_score(y_test, y_pred_lda)
+        acc_lda = accuracy_score(y_test_enc, y_pred_lda)
         st.subheader(f"LDA Confusion Matrix{title_suffix}")
-        cm_lda = confusion_matrix(y_test, y_pred_lda)
+        cm_lda = confusion_matrix(y_test_enc, y_pred_lda)
         fig_cm_lda = px.imshow(cm_lda, text_auto=True, x=unique_y, y=unique_y,
                                color_continuous_scale='Blues', title=f"LDA Confusion Matrix{title_suffix}")
         st.plotly_chart(fig_cm_lda, use_container_width=True)
@@ -420,30 +422,30 @@ if X_pca_2d_global is not None and (run_lda or run_knn):
         # LDA decision boundary using plot_decision_regions
         st.subheader(f"LDA Decision Boundary{title_suffix}")
         fig_lda, ax_lda = plt.subplots(figsize=(8, 6))
-        plot_decision_regions(X_selected, y_selected, clf=best_lda, legend=2, ax=ax_lda)
+        plot_decision_regions(X_selected, y_encoded, clf=best_lda, legend=2, ax=ax_lda)
         ax_lda.set_xlabel('PC1')
         ax_lda.set_ylabel('PC2')
         ax_lda.set_title(f'LDA Decision Boundary{title_suffix}')
         st.pyplot(fig_lda)
     if run_knn:
         if optimize_knn:
-            param_grid_knn = {'n_neighbors': range(1, min(21, len(y_train)//2 + 1))}
+            param_grid_knn = {'n_neighbors': range(1, min(21, len(y_train_enc)//2 + 1))}
             knn_grid = GridSearchCV(KNeighborsClassifier(), param_grid_knn, cv=5)
-            knn_grid.fit(X_train, y_train)
+            knn_grid.fit(X_train, y_train_enc)
             best_knn = knn_grid.best_estimator_
             best_params_knn = knn_grid.best_params_
             best_k = best_params_knn['n_neighbors']
             st.write(f"**Optimized KNN Parameters:** {best_params_knn}")
         else:
             best_knn = KNeighborsClassifier(n_neighbors=k)
-            best_knn.fit(X_train, y_train)
+            best_knn.fit(X_train, y_train_enc)
             best_params_knn = {'n_neighbors': k}
             best_k = k
             st.write(f"**KNN Parameters:** {best_params_knn}")
         y_pred_knn = best_knn.predict(X_test)
-        acc_knn = accuracy_score(y_test, y_pred_knn)
+        acc_knn = accuracy_score(y_test_enc, y_pred_knn)
         st.subheader(f"KNN Confusion Matrix{title_suffix}")
-        cm_knn = confusion_matrix(y_test, y_pred_knn)
+        cm_knn = confusion_matrix(y_test_enc, y_pred_knn)
         knn_title = f"KNN Confusion Matrix{title_suffix}"
         if label_mode != "Default Labels":
             knn_title += f" (k={best_k})"
@@ -457,7 +459,7 @@ if X_pca_2d_global is not None and (run_lda or run_knn):
         if label_mode != "Default Labels":
             knn_db_title += f' (k={best_k})'
         fig_knn, ax_knn = plt.subplots(figsize=(8, 6))
-        plot_decision_regions(X_selected, y_selected, clf=best_knn, legend=2, ax=ax_knn)
+        plot_decision_regions(X_selected, y_encoded, clf=best_knn, legend=2, ax=ax_knn)
         ax_knn.set_xlabel('PC1')
         ax_knn.set_ylabel('PC2')
         ax_knn.set_title(knn_db_title)
