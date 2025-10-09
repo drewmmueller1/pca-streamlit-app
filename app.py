@@ -12,6 +12,7 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import confusion_matrix, accuracy_score
+from mlxtend.plotting import plot_decision_regions
 
 # Title and instructions
 st.title("PCA Visualization App for Lab Data")
@@ -127,6 +128,31 @@ if uploaded_file is not None:
    
     st.sidebar.header("Download Options")
     num_save_pcs = st.sidebar.slider("Number of PCs to Save", 1, min(10, n_total_pcs), 3)
+    
+    # Classification options in sidebar
+    st.sidebar.header("Classification Options")
+    run_lda = st.sidebar.checkbox("Run Linear Discriminant Analysis (LDA)")
+    optimize_lda = st.sidebar.checkbox("Optimize LDA parameters") if run_lda else False
+    run_knn = st.sidebar.checkbox("Run K-Nearest Neighbors (KNN)")
+    optimize_knn = st.sidebar.checkbox("Optimize KNN parameters") if run_knn else False
+    if run_knn and not optimize_knn:
+        k = st.sidebar.slider("K value", 1, 20, 5)
+    else:
+        k = 5  # Default
+    
+    split_data = st.sidebar.checkbox("Split into train/test sets")
+    if split_data:
+        test_size = st.sidebar.slider("Test size", 0.1, 0.5, 0.2)
+    else:
+        test_size = 0
+    
+    if X_pca_2d_global is not None:
+        unique_classes = y_global.unique()
+        class1 = st.sidebar.selectbox("Select Class 1", unique_classes)
+        class2_options = [c for c in unique_classes if c != class1]
+        class2 = st.sidebar.selectbox("Select Class 2", class2_options)
+    else:
+        class1, class2 = None, None
    
     # 1. 2D PCA Plot (Static, first 2 PCs)
     if show_2d and n_total_pcs >= 2:
@@ -320,21 +346,9 @@ if uploaded_file is not None:
    
     st.info(f"Downloads include top {num_save_pcs} PCs.")
    
-    # Classification section
-    st.header("Classification (LDA / KNN)")
-    if X_pca_2d_global is not None:
-        unique_classes = y_global.unique()
-        split_data = st.checkbox("Split into train/test sets")
-        if split_data:
-            test_size = st.slider("Test size", 0.1, 0.5, 0.2)
-        else:
-            test_size = 0
-
-        # Select two classes for binary classification
-        class1 = st.selectbox("Select Class 1", unique_classes)
-        class2_options = [c for c in unique_classes if c != class1]
-        class2 = st.selectbox("Select Class 2", class2_options)
-
+    # Classification section (outputs in main body)
+    st.header("Classification Results")
+    if X_pca_2d_global is not None and (run_lda or run_knn):
         # Filter data for selected classes
         mask_class1 = y_global == class1
         mask_class2 = y_global == class2
@@ -348,23 +362,6 @@ if uploaded_file is not None:
             )
         else:
             X_train, X_test, y_train, y_test = X_selected, X_selected, y_selected, y_selected
-
-        run_lda = st.checkbox("Run Linear Discriminant Analysis (LDA)")
-        optimize_lda = st.checkbox("Optimize LDA parameters", key="opt_lda") if run_lda else False
-        run_knn = st.checkbox("Run K-Nearest Neighbors (KNN)")
-        optimize_knn = st.checkbox("Optimize KNN parameters", key="opt_knn") if run_knn else False
-        if run_knn and not optimize_knn:
-            k = st.slider("K value", 1, 20, 5)
-
-        # Plot setup for boundaries
-        h = 0.02  # Step size in mesh
-        x_min, x_max = X_train[:, 0].min() - 1, X_train[:, 0].max() + 1
-        y_min, y_max = X_train[:, 1].min() - 1, X_train[:, 1].max() + 1
-        xx, yy = np.meshgrid(np.arange(x_min, x_max, h),
-                             np.arange(y_min, y_max, h))
-
-        if run_lda or run_knn:
-            col3, col4 = st.columns(2)
 
         if run_lda:
             if optimize_lda:
@@ -382,26 +379,17 @@ if uploaded_file is not None:
             y_pred_lda = best_lda.predict(X_test)
             acc_lda = accuracy_score(y_test, y_pred_lda)
 
-            with col3:
-                st.subheader("LDA Confusion Matrix")
-                cm_lda = confusion_matrix(y_test, y_pred_lda)
-                fig_cm_lda = px.imshow(cm_lda, text_auto=True, x=[class1, class2], y=[class1, class2],
-                                       color_continuous_scale='Blues', title="LDA Confusion Matrix")
-                st.plotly_chart(fig_cm_lda, use_container_width=True)
-                st.write(f"**Accuracy:** {acc_lda:.2f}")
+            st.subheader("LDA Confusion Matrix")
+            cm_lda = confusion_matrix(y_test, y_pred_lda)
+            fig_cm_lda = px.imshow(cm_lda, text_auto=True, x=[class1, class2], y=[class1, class2],
+                                   color_continuous_scale='Blues', title="LDA Confusion Matrix")
+            st.plotly_chart(fig_cm_lda, use_container_width=True)
+            st.write(f"**Accuracy:** {acc_lda:.2f}")
 
-            # LDA loading matrix
-            st.subheader("LDA Loading Matrix")
-            loading_df_lda = pd.DataFrame(best_lda.coef_, columns=['PC1', 'PC2'], index=[class1, class2])
-            st.dataframe(loading_df_lda)
-
-            # LDA boundary plot
-            Z_lda = best_lda.predict(np.c_[xx.ravel(), yy.ravel()])
-            Z_lda = Z_lda.reshape(xx.shape)
-
+            # LDA decision boundary using plot_decision_regions
+            st.subheader("LDA Decision Boundary")
             fig_lda, ax_lda = plt.subplots(figsize=(8, 6))
-            ax_lda.contourf(xx, yy, Z_lda, alpha=0.8, cmap=plt.cm.RdYlBu)
-            scatter_lda = ax_lda.scatter(X_test[:, 0], X_test[:, 1], c=y_test, cmap=plt.cm.RdYlBu, edgecolors='k')
+            plot_decision_regions(X_selected, y_selected, clf=best_lda, legend=2, ax=ax_lda)
             ax_lda.set_xlabel('PC1')
             ax_lda.set_ylabel('PC2')
             ax_lda.set_title('LDA Decision Boundary')
@@ -425,31 +413,25 @@ if uploaded_file is not None:
             y_pred_knn = best_knn.predict(X_test)
             acc_knn = accuracy_score(y_test, y_pred_knn)
 
-            with col4:
-                st.subheader("KNN Confusion Matrix")
-                cm_knn = confusion_matrix(y_test, y_pred_knn)
-                fig_cm_knn = px.imshow(cm_knn, text_auto=True, x=[class1, class2], y=[class1, class2],
-                                       color_continuous_scale='Blues', title=f"KNN (k={best_k}) Confusion Matrix")
-                st.plotly_chart(fig_cm_knn, use_container_width=True)
-                st.write(f"**Accuracy:** {acc_knn:.2f}")
+            st.subheader("KNN Confusion Matrix")
+            cm_knn = confusion_matrix(y_test, y_pred_knn)
+            fig_cm_knn = px.imshow(cm_knn, text_auto=True, x=[class1, class2], y=[class1, class2],
+                                   color_continuous_scale='Blues', title=f"KNN (k={best_k}) Confusion Matrix")
+            st.plotly_chart(fig_cm_knn, use_container_width=True)
+            st.write(f"**Accuracy:** {acc_knn:.2f}")
 
-            # KNN loading matrix
-            st.subheader("KNN Loading Matrix")
-            st.write("KNN does not have a loading matrix (non-parametric model).")
-
-            # KNN boundary plot
-            Z_knn = best_knn.predict(np.c_[xx.ravel(), yy.ravel()])
-            Z_knn = Z_knn.reshape(xx.shape)
-
+            # KNN decision boundary using plot_decision_regions
+            st.subheader("KNN Decision Boundary")
             fig_knn, ax_knn = plt.subplots(figsize=(8, 6))
-            ax_knn.contourf(xx, yy, Z_knn, alpha=0.8, cmap=plt.cm.RdYlBu)
-            scatter_knn = ax_knn.scatter(X_test[:, 0], X_test[:, 1], c=y_test, cmap=plt.cm.RdYlBu, edgecolors='k')
+            plot_decision_regions(X_selected, y_selected, clf=best_knn, legend=2, ax=ax_knn)
             ax_knn.set_xlabel('PC1')
             ax_knn.set_ylabel('PC2')
             ax_knn.set_title(f'KNN (k={best_k}) Decision Boundary')
             st.pyplot(fig_knn)
-    else:
+    elif X_pca_2d_global is None:
         st.warning("Need at least 2 PCs for classification visualization.")
+    else:
+        st.info("Enable LDA or KNN in the sidebar to run classification.")
    
 else:
     st.info("👆 Please upload a CSV file to get started.")
