@@ -45,7 +45,7 @@ if uploaded_file is not None:
     # Preprocessing options
     preprocess_option = st.sidebar.radio(
         "Select preprocessing:",
-        ['None', 'SNV', 'Z-score', 'SNV then Z-score']
+        ['None', 'SNV', 'Z-score']
     )
    
     if transpose_data:
@@ -79,7 +79,7 @@ if uploaded_file is not None:
    
     # Apply preprocessing
     X_processed = X.copy()
-    if preprocess_option == 'SNV' or preprocess_option == 'SNV then Z-score':
+    if preprocess_option == 'SNV':
         # SNV: per sample (row) normalization
         for i in range(X_processed.shape[0]):
             row_mean = np.mean(X_processed.iloc[i])
@@ -88,7 +88,7 @@ if uploaded_file is not None:
                 X_processed.iloc[i] = (X_processed.iloc[i] - row_mean) / row_std
             else:
                 st.warning(f"Row {i+1} has zero variance—SNV skipped for it.")
-    if preprocess_option == 'Z-score' or preprocess_option == 'SNV then Z-score':
+    elif preprocess_option == 'Z-score':
         # Z-score: feature-wise (StandardScaler)
         scaler = StandardScaler()
         X_processed = pd.DataFrame(scaler.fit_transform(X_processed), columns=X.columns, index=X.index)
