@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.cluster import KMeans
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -164,6 +165,11 @@ if run_knn and not optimize_knn:
     k = st.sidebar.slider("K value", 1, 20, 5)
 else:
     k = 5 # Default
+run_kmeans = st.sidebar.checkbox("Run K-Means Clustering")
+if run_kmeans:
+    n_clusters = st.sidebar.slider("Number of clusters", 2, 10, 3)
+else:
+    n_clusters = 3
 # Label Configuration
 st.subheader("Label Configuration")
 label_mode = st.radio("Label Mode", ["Default Labels", "Combined Groups"], index=0)
@@ -251,9 +257,8 @@ if show_scree:
     n_scree = min(n_99 + 2, n_total_pcs)
     # Use var_ratios directly
     var_ratio = var_ratios[:n_scree] * 100 # % variance
-    cum_var_scree = np.cumsum(var_ratio)
-    # Create subplot: bar for %var, line for cumulative
-    fig_scree = make_subplots(specs=[[{"secondary_y": True}]])
+    # Create subplot: bar for %var
+    fig_scree = make_subplots(specs=[[{"secondary_y": False}]])
     # Bar: % variance per PC
     fig_scree.add_trace(
         go.Bar(x=[f'PC{i+1}' for i in range(n_scree)], y=var_ratio,
@@ -264,20 +269,13 @@ if show_scree:
     for i, v in enumerate(var_ratio):
         fig_scree.add_annotation(x=f'PC{i+1}', y=v, text=f'{v:.1f}%', showarrow=False,
                                  yshift=10, font=dict(size=10))
-    # Line: Cumulative % variance
-    fig_scree.add_trace(
-        go.Scatter(x=[f'PC{i+1}' for i in range(n_scree)], y=cum_var_scree,
-                   mode='lines+markers', name='Cumulative % Variance', line=dict(color='red', dash='dash')),
-        secondary_y=True
-    )
     fig_scree.update_layout(title=f"Scree Plot (Showing {n_scree} PCs: ≥99% + 2 more)",
                             xaxis_title="Principal Components",
-                            yaxis_title="% Variance Explained", yaxis2_title="Cumulative % Variance")
-    fig_scree.update_yaxes(range=[0, max(var_ratio.max(), cum_var_scree[-1]) * 1.1], secondary_y=False)
-    fig_scree.update_yaxes(range=[0, 100], secondary_y=True)
+                            yaxis_title="% Variance Explained")
+    fig_scree.update_yaxes(range=[0, var_ratio.max() * 1.1], secondary_y=False)
     st.plotly_chart(fig_scree, use_container_width=True)
     # Total variance info
-    st.info(f"Total variance explained by shown PCs: {cum_var_scree[-1]:.1f}% (≥99% reached at PC{n_99})")
+    st.info(f"Total variance explained by shown PCs: {cum_var[n_scree-1]:.1f}% (≥99% reached at PC{n_99})")
 # 4. Factor Loadings Plot (Toggle between Bar and Connected Scatterplot)
 if show_loadings:
     if pca_full is None:
@@ -366,6 +364,18 @@ with col2:
     else:
         st.info("Loadings not available for pre-computed mode.")
 st.info(f"Downloads include top {num_save_pcs} PCs.")
+# Clustering section
+if run_kmeans and X_pca_2d_global is not None:
+    st.header("Clustering Results")
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    cluster_labels = kmeans.fit_predict(X_pca_2d_global)
+    df_cluster = pd.DataFrame(X_pca_2d_global, columns=['PC1', 'PC2'])
+    df_cluster['cluster'] = cluster_labels
+    fig_cluster = px.scatter(df_cluster, x='PC1', y='PC2', color='cluster',
+                             title=f"K-Means Clustering (k={n_clusters}) on PC1 vs PC2",
+                             color_discrete_sequence=px.colors.qualitative.Set1)
+    st.plotly_chart(fig_cluster, use_container_width=True)
+    st.info(f"Clustering completed with {n_clusters} clusters.")
 # Classification section (outputs in main body)
 st.header("Classification Results")
 if X_pca_2d_global is not None and (run_lda or run_knn):
