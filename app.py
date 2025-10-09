@@ -164,34 +164,28 @@ if run_knn and not optimize_knn:
     k = st.sidebar.slider("K value", 1, 20, 5)
 else:
     k = 5 # Default
-# Label combination options
-st.subheader("Label Management")
-if X_pca_2d_global is not None:
-    unique_classes = sorted(y_global.unique())
-    # Multi-select for Group A and Group B
-    selected_for_a = st.multiselect("Select labels for Group A", unique_classes, default=unique_classes[:1])
-    selected_for_b = st.multiselect("Select labels for Group B", unique_classes, default=unique_classes[1:2])
-   
-    # Rename options if combining
-    rename_a = st.text_input("Rename Group A (optional)", value=f"Group A ({', '.join(selected_for_a)})")
-    rename_b = st.text_input("Rename Group B (optional)", value=f"Group B ({', '.join(selected_for_b)})")
-   
-    if not selected_for_a or not selected_for_b:
-        st.warning("Select at least one label for each group.")
-    y_plot = y.copy()
-    if selected_for_a and selected_for_b:
-        y_plot = y_plot.replace(selected_for_a, rename_a)
-        y_plot = y_plot.replace(selected_for_b, rename_b)
+# Label Configuration
+st.subheader("Label Configuration")
+label_mode = st.radio("Label Mode", ["Default Labels", "Combined Groups"], index=0)
+y_plot = y.copy()
+if label_mode == "Default Labels":
+    st.info("Using default simplified labels for plots and models.")
 else:
-    y_plot = y
-    selected_for_a, selected_for_b, rename_a, rename_b = [], [], "Group A", "Group B"
-# Dataset split options
-st.subheader("Dataset Split Options")
-split_data = st.checkbox("Split into train/test sets")
-if split_data:
-    test_size = st.slider("Test size", 0.1, 0.5, 0.2)
-else:
-    test_size = 0
+    if X_pca_2d_global is not None:
+        unique_classes = sorted(y_global.unique())
+        selected_for_a = st.multiselect("Select labels for Group A", unique_classes, default=unique_classes[:1])
+        selected_for_b = st.multiselect("Select labels for Group B", unique_classes, default=unique_classes[1:2])
+        rename_a = st.text_input("Rename Group A (optional)", value=f"Group A ({', '.join(selected_for_a)})")
+        rename_b = st.text_input("Rename Group B (optional)", value=f"Group B ({', '.join(selected_for_b)})")
+        if not selected_for_a or not selected_for_b:
+            st.warning("Select at least one label for each group.")
+        apply_to_plots = st.checkbox("Use combined labels for plots", value=True)
+        if apply_to_plots and selected_for_a and selected_for_b:
+            y_plot = y_plot.replace({label: rename_a for label in selected_for_a})
+            y_plot = y_plot.replace({label: rename_b for label in selected_for_b})
+    else:
+        selected_for_a, selected_for_b, rename_a, rename_b = [], [], "Group A", "Group B"
+        apply_to_plots = False
 # 1. 2D PCA Plot (Static, first 2 PCs)
 if show_2d and n_total_pcs >= 2:
     st.subheader("2D PCA Plot (PC1 vs PC2)")
@@ -374,13 +368,28 @@ with col2:
 st.info(f"Downloads include top {num_save_pcs} PCs.")
 # Classification section (outputs in main body)
 st.header("Classification Results")
-if X_pca_2d_global is not None and (run_lda or run_knn) and selected_for_a and selected_for_b:
-    # Filter data for selected groups
-    mask_group_a = y_global.isin(selected_for_a)
-    mask_group_b = y_global.isin(selected_for_b)
-    mask_selected = mask_group_a | mask_group_b
-    X_selected = X_pca_2d_global[mask_selected]
-    y_selected = np.where(mask_group_a[mask_selected], 0, 1) # Binary: 0 for Group A, 1 for Group B
+if X_pca_2d_global is not None and (run_lda or run_knn):
+    split_data = st.checkbox("Split into train/test sets")
+    if split_data:
+        test_size = st.slider("Test size", 0.1, 0.5, 0.2)
+    else:
+        test_size = 0
+    if label_mode == "Default Labels":
+        X_selected = X_pca_2d_global
+        y_selected = y_global
+        unique_y = sorted(y_selected.unique())
+        title_suffix = " (Multi-class)"
+    else:
+        if not selected_for_a or not selected_for_b:
+            st.warning("Select groups to run combined classification.")
+            st.stop()
+        mask_group_a = y_global.isin(selected_for_a)
+        mask_group_b = y_global.isin(selected_for_b)
+        mask_selected = mask_group_a | mask_group_b
+        X_selected = X_pca_2d_global[mask_selected]
+        y_selected = np.where(mask_group_a[mask_selected], 0, 1) # Binary: 0 for Group A, 1 for Group B
+        unique_y = [rename_a, rename_b]
+        title_suffix = ""
     if split_data:
         X_train, X_test, y_train, y_test = train_test_split(
             X_selected, y_selected, test_size=test_size, random_state=42, stratify=y_selected
@@ -402,19 +411,19 @@ if X_pca_2d_global is not None and (run_lda or run_knn) and selected_for_a and s
             st.write(f"**LDA Parameters:** {best_params_lda}")
         y_pred_lda = best_lda.predict(X_test)
         acc_lda = accuracy_score(y_test, y_pred_lda)
-        st.subheader("LDA Confusion Matrix")
+        st.subheader(f"LDA Confusion Matrix{title_suffix}")
         cm_lda = confusion_matrix(y_test, y_pred_lda)
-        fig_cm_lda = px.imshow(cm_lda, text_auto=True, x=[rename_a, rename_b], y=[rename_a, rename_b],
-                               color_continuous_scale='Blues', title="LDA Confusion Matrix")
+        fig_cm_lda = px.imshow(cm_lda, text_auto=True, x=unique_y, y=unique_y,
+                               color_continuous_scale='Blues', title=f"LDA Confusion Matrix{title_suffix}")
         st.plotly_chart(fig_cm_lda, use_container_width=True)
         st.write(f"**Accuracy:** {acc_lda:.2f}")
         # LDA decision boundary using plot_decision_regions
-        st.subheader("LDA Decision Boundary")
+        st.subheader(f"LDA Decision Boundary{title_suffix}")
         fig_lda, ax_lda = plt.subplots(figsize=(8, 6))
         plot_decision_regions(X_selected, y_selected, clf=best_lda, legend=2, ax=ax_lda)
         ax_lda.set_xlabel('PC1')
         ax_lda.set_ylabel('PC2')
-        ax_lda.set_title('LDA Decision Boundary')
+        ax_lda.set_title(f'LDA Decision Boundary{title_suffix}')
         st.pyplot(fig_lda)
     if run_knn:
         if optimize_knn:
@@ -433,24 +442,30 @@ if X_pca_2d_global is not None and (run_lda or run_knn) and selected_for_a and s
             st.write(f"**KNN Parameters:** {best_params_knn}")
         y_pred_knn = best_knn.predict(X_test)
         acc_knn = accuracy_score(y_test, y_pred_knn)
-        st.subheader("KNN Confusion Matrix")
+        st.subheader(f"KNN Confusion Matrix{title_suffix}")
         cm_knn = confusion_matrix(y_test, y_pred_knn)
-        fig_cm_knn = px.imshow(cm_knn, text_auto=True, x=[rename_a, rename_b], y=[rename_a, rename_b],
-                               color_continuous_scale='Blues', title=f"KNN (k={best_k}) Confusion Matrix")
+        knn_title = f"KNN Confusion Matrix{title_suffix}"
+        if label_mode != "Default Labels":
+            knn_title += f" (k={best_k})"
+        fig_cm_knn = px.imshow(cm_knn, text_auto=True, x=unique_y, y=unique_y,
+                               color_continuous_scale='Blues', title=knn_title)
         st.plotly_chart(fig_cm_knn, use_container_width=True)
         st.write(f"**Accuracy:** {acc_knn:.2f}")
         # KNN decision boundary using plot_decision_regions
-        st.subheader("KNN Decision Boundary")
+        st.subheader(f"KNN Decision Boundary{title_suffix}")
+        knn_db_title = f'KNN Decision Boundary{title_suffix}'
+        if label_mode != "Default Labels":
+            knn_db_title += f' (k={best_k})'
         fig_knn, ax_knn = plt.subplots(figsize=(8, 6))
         plot_decision_regions(X_selected, y_selected, clf=best_knn, legend=2, ax=ax_knn)
         ax_knn.set_xlabel('PC1')
         ax_knn.set_ylabel('PC2')
-        ax_knn.set_title(f'KNN (k={best_k}) Decision Boundary')
+        ax_knn.set_title(knn_db_title)
         st.pyplot(fig_knn)
 elif X_pca_2d_global is None:
     st.warning("Need at least 2 PCs for classification visualization.")
 else:
-    st.info("Enable LDA or KNN in the sidebar and select groups to run classification.")
+    st.info("Enable LDA or KNN in the sidebar to run classification.")
 # Footer
 st.markdown("---")
 st.caption("Reusable for any dataset. Built with Streamlit & scikit-learn. Questions? Ask Drew!")
