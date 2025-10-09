@@ -164,23 +164,6 @@ if run_knn and not optimize_knn:
     k = st.sidebar.slider("K value", 1, 20, 5)
 else:
     k = 5 # Default
-split_data = st.sidebar.checkbox("Split into train/test sets")
-if split_data:
-    test_size = st.sidebar.slider("Test size", 0.1, 0.5, 0.2)
-else:
-    test_size = 0
-if X_pca_2d_global is not None:
-    unique_classes = sorted(y_global.unique())
-    # Multi-select for Group A and Group B
-    selected_for_a = st.sidebar.multiselect("Select labels for Group A", unique_classes, default=unique_classes[:1])
-    selected_for_b = st.sidebar.multiselect("Select labels for Group B", unique_classes, default=unique_classes[1:2])
-    # Rename options if combining
-    rename_a = st.sidebar.text_input("Rename Group A (optional)", value=f"Group A ({', '.join(selected_for_a)})")
-    rename_b = st.sidebar.text_input("Rename Group B (optional)", value=f"Group B ({', '.join(selected_for_b)})")
-    if not selected_for_a or not selected_for_b:
-        st.sidebar.warning("Select at least one label for each group.")
-else:
-    selected_for_a, selected_for_b, rename_a, rename_b = [], [], "Group A", "Group B"
 # 1. 2D PCA Plot (Static, first 2 PCs)
 if show_2d and n_total_pcs >= 2:
     st.subheader("2D PCA Plot (PC1 vs PC2)")
@@ -361,6 +344,28 @@ with col2:
     else:
         st.info("Loadings not available for pre-computed mode.")
 st.info(f"Downloads include top {num_save_pcs} PCs.")
+# Dataset split options
+st.subheader("Dataset Split Options")
+split_data = st.checkbox("Split into train/test sets")
+if split_data:
+    test_size = st.slider("Test size", 0.1, 0.5, 0.2)
+else:
+    test_size = 0
+# Label combination options
+if X_pca_2d_global is not None:
+    unique_classes = sorted(y_global.unique())
+    # Multi-select for Group A and Group B
+    selected_for_a = st.multiselect("Select labels for Group A", unique_classes, default=unique_classes[:1])
+    selected_for_b = st.multiselect("Select labels for Group B", unique_classes, default=unique_classes[1:2])
+   
+    # Rename options if combining
+    rename_a = st.text_input("Rename Group A (optional)", value=f"Group A ({', '.join(selected_for_a)})")
+    rename_b = st.text_input("Rename Group B (optional)", value=f"Group B ({', '.join(selected_for_b)})")
+   
+    if not selected_for_a or not selected_for_b:
+        st.warning("Select at least one label for each group.")
+else:
+    selected_for_a, selected_for_b, rename_a, rename_b = [], [], "Group A", "Group B"
 # Classification section (outputs in main body)
 st.header("Classification Results")
 if X_pca_2d_global is not None and (run_lda or run_knn) and selected_for_a and selected_for_b:
