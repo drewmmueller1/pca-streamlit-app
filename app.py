@@ -96,8 +96,12 @@ if uploaded_file is not None:
     X = X_processed
     st.success(f"Preprocessing applied: {preprocess_option}")
    
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+    # Conditional scaling only if not Z-score (to avoid double scaling)
+    if preprocess_option != 'Z-score':
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+    else:
+        X_scaled = X.values  # Already standardized
    
     # Compute full PCA for reuse
     pca_full = PCA()
@@ -147,12 +151,19 @@ if uploaded_file is not None:
         test_size = 0
     
     if X_pca_2d_global is not None:
-        unique_classes = y_global.unique()
-        class1 = st.sidebar.selectbox("Select Class 1", unique_classes)
-        class2_options = [c for c in unique_classes if c != class1]
-        class2 = st.sidebar.selectbox("Select Class 2", class2_options)
+        unique_classes = sorted(y_global.unique())
+        # Multi-select for Group A and Group B
+        selected_for_a = st.sidebar.multiselect("Select labels for Group A", unique_classes, default=unique_classes[:1])
+        selected_for_b = st.sidebar.multiselect("Select labels for Group B", unique_classes, default=unique_classes[1:2])
+        
+        # Rename options if combining
+        rename_a = st.sidebar.text_input("Rename Group A (optional)", value=f"Group A ({', '.join(selected_for_a)})")
+        rename_b = st.sidebar.text_input("Rename Group B (optional)", value=f"Group B ({', '.join(selected_for_b)})")
+        
+        if not selected_for_a or not selected_for_b:
+            st.sidebar.warning("Select at least one label for each group.")
     else:
-        class1, class2 = None, None
+        selected_for_a, selected_for_b, rename_a, rename_b = [], [], "Group A", "Group B"
    
     # 1. 2D PCA Plot (Static, first 2 PCs)
     if show_2d and n_total_pcs >= 2:
@@ -348,13 +359,13 @@ if uploaded_file is not None:
    
     # Classification section (outputs in main body)
     st.header("Classification Results")
-    if X_pca_2d_global is not None and (run_lda or run_knn):
-        # Filter data for selected classes
-        mask_class1 = y_global == class1
-        mask_class2 = y_global == class2
-        mask_selected = mask_class1 | mask_class2
+    if X_pca_2d_global is not None and (run_lda or run_knn) and selected_for_a and selected_for_b:
+        # Filter data for selected groups
+        mask_group_a = y_global.isin(selected_for_a)
+        mask_group_b = y_global.isin(selected_for_b)
+        mask_selected = mask_group_a | mask_group_b
         X_selected = X_pca_2d_global[mask_selected]
-        y_selected = np.where(mask_class1[mask_selected], 0, 1)  # Binary: 0 for class1, 1 for class2
+        y_selected = np.where(mask_group_a[mask_selected], 0, 1)  # Binary: 0 for Group A, 1 for Group B
 
         if split_data:
             X_train, X_test, y_train, y_test = train_test_split(
@@ -381,7 +392,7 @@ if uploaded_file is not None:
 
             st.subheader("LDA Confusion Matrix")
             cm_lda = confusion_matrix(y_test, y_pred_lda)
-            fig_cm_lda = px.imshow(cm_lda, text_auto=True, x=[class1, class2], y=[class1, class2],
+            fig_cm_lda = px.imshow(cm_lda, text_auto=True, x=[rename_a, rename_b], y=[rename_a, rename_b],
                                    color_continuous_scale='Blues', title="LDA Confusion Matrix")
             st.plotly_chart(fig_cm_lda, use_container_width=True)
             st.write(f"**Accuracy:** {acc_lda:.2f}")
@@ -415,7 +426,7 @@ if uploaded_file is not None:
 
             st.subheader("KNN Confusion Matrix")
             cm_knn = confusion_matrix(y_test, y_pred_knn)
-            fig_cm_knn = px.imshow(cm_knn, text_auto=True, x=[class1, class2], y=[class1, class2],
+            fig_cm_knn = px.imshow(cm_knn, text_auto=True, x=[rename_a, rename_b], y=[rename_a, rename_b],
                                    color_continuous_scale='Blues', title=f"KNN (k={best_k}) Confusion Matrix")
             st.plotly_chart(fig_cm_knn, use_container_width=True)
             st.write(f"**Accuracy:** {acc_knn:.2f}")
@@ -431,7 +442,7 @@ if uploaded_file is not None:
     elif X_pca_2d_global is None:
         st.warning("Need at least 2 PCs for classification visualization.")
     else:
-        st.info("Enable LDA or KNN in the sidebar to run classification.")
+        st.info("Enable LDA or KNN in the sidebar and select groups to run classification.")
    
 else:
     st.info("👆 Please upload a CSV file to get started.")
