@@ -4,3 +4,4 @@ numpy
 scikit-learn
 plotly
 matplotlib
+plot_decision_regions
