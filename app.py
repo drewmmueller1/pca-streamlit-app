@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import confusion_matrix
 
 # Title and instructions
@@ -26,6 +26,9 @@ Upload a CSV file with:
 # File uploader (required)
 uploaded_file = st.file_uploader("Choose a CSV file to upload", type="csv")
 if uploaded_file is not None:
+    # Data type selection
+    data_type = st.radio("Select Data Type", ["Raw Data (compute PCA)", "Pre-computed PCA Scores"])
+    
     # Load data from upload
     df = pd.read_csv(uploaded_file)
     st.success(f"Loaded dataset: {df.shape[0]} rows, {df.shape[1]} columns")
@@ -34,75 +37,92 @@ if uploaded_file is not None:
     st.subheader("Data Overview")
     st.dataframe(df.head())
    
-    if 'label' not in df.columns:
-        st.warning("No 'label' column found. Will generate from column names if transposing.")
-   
-    # New: Option to transpose dataset
-    st.sidebar.header("Data Prep Options")
-    transpose_data = st.sidebar.checkbox("Transpose Dataset (if samples are in columns)", value=False, help="Swaps rows and columns. Use if your data has samples as columns and features as rows (e.g., wavenumbers in first column).")
-   
-    # Preprocessing options
-    preprocess_option = st.sidebar.radio(
-        "Select preprocessing:",
-        ['None', 'SNV', 'Z-score', 'SNV then Z-score']
-    )
-   
-    if transpose_data:
-        # Assume first col is features (e.g., wavenumber), rest are samples
-        if df.shape[1] < 2:
-            st.error("Dataset too narrow for transpose. Need at least 2 columns.")
-            st.stop()
-        features = df.iloc[:, 0].values # First col as feature names (e.g., wavenumbers)
-        data = df.iloc[:, 1:].T # Transpose the data part: rows=samples, columns=features
-        data.columns = features # Set columns to original first col values
-        # Generate labels from original column names (samples)
-        sample_names = df.columns[1:]
-        data['label'] = [name.split('_')[0] for name in sample_names] # Prefix as label
-        df = data.reset_index(drop=True) # Reset index to 0,1,...
-        st.success(f"Dataset transposed: Samples as rows ({df.shape[0]}), features as columns ({df.shape[1]-1}). Labels generated from prefixes.")
-    else:
+    if data_type == "Pre-computed PCA Scores":
         if 'label' not in df.columns:
-            st.error("CSV must have a 'label' column for coloring points. Add it and re-upload (or enable transpose to auto-generate).")
+            st.error("CSV must have a 'label' column as first column for PCA scores.")
             st.stop()
-   
-    # Simplify labels (for both cases: prefix before '_')
-    df['label'] = df['label'].astype(str).str.split('_').str[0]
-    st.info(f"Simplified labels: Unique classes now {df['label'].nunique()}")
-   
-    # Prepare data for PCA
-    X = df.drop('label', axis=1).select_dtypes(include=[np.number]) # Numerical features only
-    y = df['label']
-    if X.empty:
-        st.error("No numerical columns found for PCA. Ensure your CSV has numeric feature columns.")
-        st.stop()
-   
-    # Apply preprocessing
-    X_processed = X.copy()
-    if preprocess_option == 'SNV' or preprocess_option == 'SNV then Z-score':
-        # SNV: per sample (row) normalization
-        for i in range(X_processed.shape[0]):
-            row_mean = np.mean(X_processed.iloc[i])
-            row_std = np.std(X_processed.iloc[i])
-            if row_std > 0:
-                X_processed.iloc[i] = (X_processed.iloc[i] - row_mean) / row_std
-            else:
-                st.warning(f"Row {i+1} has zero variance—SNV skipped for it.")
-    if preprocess_option == 'Z-score' or preprocess_option == 'SNV then Z-score':
-        # Z-score: feature-wise (StandardScaler)
+        X = df.iloc[:, 1:].select_dtypes(include=[np.number])  # PCs starting from column 2
+        y = df['label']
+        if X.empty:
+            st.error("No numerical PC columns found after label.")
+            st.stop()
+        st.success("Pre-computed PCA scores loaded. Using first 2/3 columns for 2D/3D plots.")
+        # No preprocessing or PCA computation
+        X_scaled = X.values  # Already PCs, no scaling needed for viz
+        n_total_pcs = X.shape[1]
+        var_ratios = None  # Cannot compute
+        pca_full = None
+    else:  # Raw Data
+        if 'label' not in df.columns:
+            st.warning("No 'label' column found. Will generate from column names if transposing.")
+       
+        # New: Option to transpose dataset
+        st.sidebar.header("Data Prep Options")
+        transpose_data = st.sidebar.checkbox("Transpose Dataset (if samples are in columns)", value=False, help="Swaps rows and columns. Use if your data has samples as columns and features as rows (e.g., wavenumbers in first column).")
+       
+        # Preprocessing options
+        preprocess_option = st.sidebar.radio(
+            "Select preprocessing:",
+            ['None', 'SNV', 'Z-score', 'SNV then Z-score']
+        )
+       
+        if transpose_data:
+            # Assume first col is features (e.g., wavenumber), rest are samples
+            if df.shape[1] < 2:
+                st.error("Dataset too narrow for transpose. Need at least 2 columns.")
+                st.stop()
+            features = df.iloc[:, 0].values # First col as feature names (e.g., wavenumbers)
+            data = df.iloc[:, 1:].T # Transpose the data part: rows=samples, columns=features
+            data.columns = features # Set columns to original first col values
+            # Generate labels from original column names (samples)
+            sample_names = df.columns[1:]
+            data['label'] = [name.split('_')[0] for name in sample_names] # Prefix as label
+            df = data.reset_index(drop=True) # Reset index to 0,1,...
+            st.success(f"Dataset transposed: Samples as rows ({df.shape[0]}), features as columns ({df.shape[1]-1}). Labels generated from prefixes.")
+        else:
+            if 'label' not in df.columns:
+                st.error("CSV must have a 'label' column for coloring points. Add it and re-upload (or enable transpose to auto-generate).")
+                st.stop()
+       
+        # Simplify labels (for both cases: prefix before '_')
+        df['label'] = df['label'].astype(str).str.split('_').str[0]
+        st.info(f"Simplified labels: Unique classes now {df['label'].nunique()}")
+       
+        # Prepare data for PCA
+        X = df.drop('label', axis=1).select_dtypes(include=[np.number]) # Numerical features only
+        y = df['label']
+        if X.empty:
+            st.error("No numerical columns found for PCA. Ensure your CSV has numeric feature columns.")
+            st.stop()
+       
+        # Apply preprocessing
+        X_processed = X.copy()
+        if preprocess_option == 'SNV' or preprocess_option == 'SNV then Z-score':
+            # SNV: per sample (row) normalization
+            for i in range(X_processed.shape[0]):
+                row_mean = np.mean(X_processed.iloc[i])
+                row_std = np.std(X_processed.iloc[i])
+                if row_std > 0:
+                    X_processed.iloc[i] = (X_processed.iloc[i] - row_mean) / row_std
+                else:
+                    st.warning(f"Row {i+1} has zero variance—SNV skipped for it.")
+        if preprocess_option == 'Z-score' or preprocess_option == 'SNV then Z-score':
+            # Z-score: feature-wise (StandardScaler)
+            scaler = StandardScaler()
+            X_processed = pd.DataFrame(scaler.fit_transform(X_processed), columns=X.columns, index=X.index)
+       
+        X = X_processed
+        st.success(f"Preprocessing applied: {preprocess_option}")
+       
         scaler = StandardScaler()
-        X_processed = pd.DataFrame(scaler.fit_transform(X_processed), columns=X.columns, index=X.index)
-   
-    X = X_processed
-    st.success(f"Preprocessing applied: {preprocess_option}")
-   
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-   
-    # Compute full PCA for reuse
-    pca_full = PCA()
-    X_pca = pca_full.fit_transform(X_scaled)
-    n_total_pcs = X_pca.shape[1]
-    var_ratios = pca_full.explained_variance_ratio_
+        X_scaled = scaler.fit_transform(X)
+       
+        # Compute full PCA for reuse
+        pca_full = PCA()
+        X_pca = pca_full.fit_transform(X_scaled)
+        n_total_pcs = X_pca.shape[1]
+        var_ratios = pca_full.explained_variance_ratio_
+        X_pca_2d_global = PCA(n_components=2).fit_transform(X_scaled)
    
     # Sidebar options (toggles + save slider + loadings type)
     st.sidebar.header("Plot Options")
@@ -111,19 +131,26 @@ if uploaded_file is not None:
     show_scree = st.sidebar.checkbox("Show Scree Plot", value=True)
     show_loadings = st.sidebar.checkbox("Show Loadings Plot (Top 3 PCs)", value=True)
    
-    if show_loadings:
+    if show_loadings and data_type == "Raw Data":
         loadings_type = st.sidebar.selectbox("Loadings Plot Type", ["Bar Graph (Discrete, e.g., GCMS)", "Connected Scatterplot (Continuous, e.g., Spectroscopy)"], index=0)
     else:
         loadings_type = "Bar Graph (Discrete, e.g., GCMS)" # Default if not shown
    
     st.sidebar.header("Download Options")
-    num_save_pcs = st.sidebar.slider("Number of PCs to Save", 1, min(10, n_total_pcs), 3)
+    if data_type == "Raw Data":
+        num_save_pcs = st.sidebar.slider("Number of PCs to Save", 1, min(10, n_total_pcs), 3)
+    else:
+        num_save_pcs = min(5, n_total_pcs)  # Default for PCA data
    
     # 1. 2D PCA Plot (Static, first 2 PCs)
-    if show_2d and n_total_pcs >= 2:
+    if show_2d and (data_type == "Raw Data" and n_total_pcs >= 2 or data_type == "Pre-computed PCA Scores" and X.shape[1] >= 2):
         st.subheader("2D PCA Plot (PC1 vs PC2)")
-        pca_2d = PCA(n_components=2)
-        X_pca_2d = pca_2d.fit_transform(X_scaled)
+        if data_type == "Raw Data":
+            pca_2d = PCA(n_components=2)
+            X_pca_2d = pca_2d.fit_transform(X_scaled)
+        else:
+            X_pca_2d = X.iloc[:, :2].values
+            pca_2d = None  # No variance info
         df_plot_2d = pd.DataFrame(X_pca_2d, columns=['PC1', 'PC2'])
         df_plot_2d['label'] = y
        
@@ -138,49 +165,62 @@ if uploaded_file is not None:
             ax.scatter(df_plot_2d[mask]['PC1'], df_plot_2d[mask]['PC2'],
                        c=[color_map[label]], label=label, s=50)
        
-        ax.set_xlabel(f"PC1 ({pca_2d.explained_variance_ratio_[0]:.1%})")
-        ax.set_ylabel(f"PC2 ({pca_2d.explained_variance_ratio_[1]:.1%})")
+        if data_type == "Raw Data":
+            ax.set_xlabel(f"PC1 ({pca_2d.explained_variance_ratio_[0]:.1%})")
+            ax.set_ylabel(f"PC2 ({pca_2d.explained_variance_ratio_[1]:.1%})")
+        else:
+            ax.set_xlabel("PC1")
+            ax.set_ylabel("PC2")
         ax.set_title("Static 2D PCA Plot")
         ax.legend()
         ax.grid(True, alpha=0.3)
         st.pyplot(fig)
         plt.close(fig)
     elif show_2d:
-        st.warning("Need at least 2 features for 2D plot.")
+        st.warning("Need at least 2 features/PCs for 2D plot.")
    
     # Store X_pca_2d for classification
-    if n_total_pcs >= 2:
-        pca_2d_global = PCA(n_components=2)
-        X_pca_2d_global = pca_2d_global.fit_transform(X_scaled)
+    if (data_type == "Raw Data" and n_total_pcs >= 2) or (data_type == "Pre-computed PCA Scores" and X.shape[1] >= 2):
+        if data_type == "Raw Data":
+            X_pca_2d_global = PCA(n_components=2).fit_transform(X_scaled)
+        else:
+            X_pca_2d_global = X.iloc[:, :2].values
         y_global = y
     else:
         X_pca_2d_global = None
         y_global = None
    
     # 2. 3D PCA Plot (Interactive, FIXED to first 3 PCs only—no options to change)
-    if show_3d and n_total_pcs >= 3:
+    if show_3d and ((data_type == "Raw Data" and n_total_pcs >= 3) or (data_type == "Pre-computed PCA Scores" and X.shape[1] >= 3)):
         st.subheader("3D PCA Plot (Interactive: Rotate/Zoom with Mouse)")
-        pca_3d = PCA(n_components=3)
-        X_pca_3d = pca_3d.fit_transform(X_scaled)
+        if data_type == "Raw Data":
+            pca_3d = PCA(n_components=3)
+            X_pca_3d = pca_3d.fit_transform(X_scaled)
+        else:
+            X_pca_3d = X.iloc[:, :3].values
+            pca_3d = None
         df_plot = pd.DataFrame(X_pca_3d, columns=['PC1', 'PC2', 'PC3'])
         df_plot['label'] = y
        
         fig_3d = px.scatter_3d(df_plot, x='PC1', y='PC2', z='PC3', color='label',
                                color_discrete_sequence=px.colors.qualitative.Set1)
         fig_3d.update_traces(marker=dict(size=5))
-        fig_3d.update_layout(title="Interactive 3D PCA Plot (Fixed to PC1-PC3)",
-                             scene=dict(
-                                 xaxis_title=f"PC1 ({pca_3d.explained_variance_ratio_[0]:.1%})",
-                                 yaxis_title=f"PC2 ({pca_3d.explained_variance_ratio_[1]:.1%})",
-                                 zaxis_title=f"PC3 ({pca_3d.explained_variance_ratio_[2]:.1%})"
-                             ))
-       
+        if data_type == "Raw Data":
+            fig_3d.update_layout(title="Interactive 3D PCA Plot (Fixed to PC1-PC3)",
+                                 scene=dict(
+                                     xaxis_title=f"PC1 ({pca_3d.explained_variance_ratio_[0]:.1%})",
+                                     yaxis_title=f"PC2 ({pca_3d.explained_variance_ratio_[1]:.1%})",
+                                     zaxis_title=f"PC3 ({pca_3d.explained_variance_ratio_[2]:.1%})"
+                                 ))
+        else:
+            fig_3d.update_layout(title="Interactive 3D PCA Plot (Fixed to first 3 PCs)",
+                                 scene=dict(xaxis_title="PC1", yaxis_title="PC2", zaxis_title="PC3"))
         st.plotly_chart(fig_3d, use_container_width=True)
     elif show_3d:
-        st.warning("Need at least 3 features for 3D plot.")
+        st.warning("Need at least 3 features/PCs for 3D plot.")
    
     # 3. Scree Plot (Dynamic: >=99% var + 2 more PCs)
-    if show_scree:
+    if show_scree and data_type == "Raw Data":
         st.subheader("Scree Plot: Variance Explained")
         # Find min n for >=99% cum var
         cum_var = np.cumsum(var_ratios)
@@ -224,9 +264,11 @@ if uploaded_file is not None:
        
         # Total variance info
         st.info(f"Total variance explained by shown PCs: {cum_var_scree[-1]:.1f}% (≥99% reached at PC{n_99})")
+    elif show_scree:
+        st.info("Scree plot not available for pre-computed PCA data.")
    
     # 4. Factor Loadings Plot (Toggle between Bar and Connected Scatterplot)
-    if show_loadings:
+    if show_loadings and data_type == "Raw Data":
         st.subheader("Factor Loadings Plot (Top 3 PCs)")
         # First 3 PCs
         max_pcs = min(3, n_total_pcs)
@@ -298,26 +340,32 @@ if uploaded_file is not None:
             # Show loadings table
             st.subheader("Loadings Table (Top 3 PCs)")
             st.dataframe(loadings)
+    elif show_loadings:
+        st.info("Loadings plot not available for pre-computed PCA data.")
    
-    # Download buttons (always available after upload, but use num_save_pcs)
-    st.subheader("Download PCA Results")
+    # Download buttons
+    st.subheader("Download Results")
     col1, col2 = st.columns(2)
     with col1:
         # PC Scores (transformed data)
-        pca_save = PCA(n_components=num_save_pcs)
-        X_pca_save = pca_save.fit_transform(X_scaled)
-        df_scores = pd.DataFrame(X_pca_save, columns=[f'PC{i+1}' for i in range(num_save_pcs)])
+        if data_type == "Raw Data":
+            pca_save = PCA(n_components=num_save_pcs)
+            X_pca_save = pca_save.fit_transform(X_scaled)
+            df_scores = pd.DataFrame(X_pca_save, columns=[f'PC{i+1}' for i in range(num_save_pcs)])
+        else:
+            df_scores = X.iloc[:, :num_save_pcs]
+            df_scores.columns = [f'PC{i+1}' for i in range(num_save_pcs)]
         df_scores['label'] = y # Use simplified labels
         csv_scores = df_scores.to_csv(index=False)
         st.download_button("Download PC Scores CSV", csv_scores, "pc_scores.csv", "text/csv")
-    with col2:
-        # Loadings
-        loadings_save = pd.DataFrame(pca_full.components_[:num_save_pcs],
-                                     columns=X.columns,
-                                     index=[f'PC{i+1}' for i in range(num_save_pcs)])
-        csv_loadings = loadings_save.to_csv(index=True)
-        st.download_button("Download Loadings CSV", csv_loadings, "pca_loadings.csv", "text/csv")
-   
+    if data_type == "Raw Data":
+        with col2:
+            # Loadings
+            loadings_save = pd.DataFrame(pca_full.components_[:num_save_pcs],
+                                         columns=X.columns,
+                                         index=[f'PC{i+1}' for i in range(num_save_pcs)])
+            csv_loadings = loadings_save.to_csv(index=True)
+            st.download_button("Download Loadings CSV", csv_loadings, "pca_loadings.csv", "text/csv")
     st.info(f"Downloads include top {num_save_pcs} PCs.")
    
     # Classification section
@@ -350,9 +398,11 @@ if uploaded_file is not None:
             X_train, X_test, y_train, y_test = X_selected, X_selected, y_selected, y_selected
 
         run_lda = st.checkbox("Run Linear Discriminant Analysis (LDA)")
+        optimize_lda = st.checkbox("Optimize LDA parameters", key="opt_lda") if run_lda else False
         run_knn = st.checkbox("Run K-Nearest Neighbors (KNN)")
-        if run_knn:
-            k = st.slider("K value", 1, 15, 5)
+        optimize_knn = st.checkbox("Optimize KNN parameters", key="opt_knn") if run_knn else False
+        if run_knn and not optimize_knn:
+            k = st.slider("K value", 1, 20, 5)
 
         # Plot setup for boundaries
         h = 0.02  # Step size in mesh
@@ -365,54 +415,87 @@ if uploaded_file is not None:
             col3, col4 = st.columns(2)
 
         if run_lda:
-            lda = LDA()
-            lda.fit(X_train, y_train)
-            y_pred_lda = lda.predict(X_test)
+            if optimize_lda:
+                param_grid_lda = {'solver': ['svd', 'lsqr', 'eigen']}
+                lda_grid = GridSearchCV(LDA(), param_grid_lda, cv=5)
+                lda_grid.fit(X_train, y_train)
+                best_lda = lda_grid.best_estimator_
+                best_params_lda = lda_grid.best_params_
+                st.write(f"**Optimized LDA Parameters:** {best_params_lda}")
+            else:
+                best_lda = LDA()
+                best_lda.fit(X_train, y_train)
+                best_params_lda = {'solver': 'svd'}
+                st.write(f"**LDA Parameters:** {best_params_lda}")
+            y_pred_lda = best_lda.predict(X_test)
+            acc_lda = accuracy_score(y_test, y_pred_lda)
 
             with col3:
                 st.subheader("LDA Confusion Matrix")
                 cm_lda = confusion_matrix(y_test, y_pred_lda)
-                fig_cm_lda = px.imshow(cm_lda, text_auto=True, x=['Class 1', 'Class 2'], y=['Class 1', 'Class 2'],
+                fig_cm_lda = px.imshow(cm_lda, text_auto=True, x=[class1, class2], y=[class1, class2],
                                        color_continuous_scale='Blues', title="LDA Confusion Matrix")
                 st.plotly_chart(fig_cm_lda, use_container_width=True)
+                st.write(f"**Accuracy:** {acc_lda:.2f}")
+
+            # LDA loading matrix
+            st.subheader("LDA Loading Matrix")
+            loading_df_lda = pd.DataFrame(best_lda.coef_, columns=['PC1', 'PC2'], index=[class1, class2])
+            st.dataframe(loading_df_lda)
 
             # LDA boundary plot
-            Z_lda = lda.predict(np.c_[xx.ravel(), yy.ravel()])
+            Z_lda = best_lda.predict(np.c_[xx.ravel(), yy.ravel()])
             Z_lda = Z_lda.reshape(xx.shape)
 
-            fig_lda = go.Figure()
-            fig_lda.add_trace(go.Contour(x=xx[0], y=yy[:,0], z=Z_lda, colorscale='RdYlBu', showscale=False))
-            scatter_lda = go.Scatter(x=X_test[:, 0], y=X_test[:, 1], mode='markers',
-                                     marker=dict(color=y_test, colorscale='RdYlBu', size=8))
-            fig_lda.add_trace(scatter_lda)
-            fig_lda.update_layout(title='LDA Decision Boundary',
-                                  xaxis_title='PC1', yaxis_title='PC2')
-            st.plotly_chart(fig_lda, use_container_width=True)
+            fig_lda, ax_lda = plt.subplots(figsize=(8, 6))
+            ax_lda.contourf(xx, yy, Z_lda, alpha=0.8, cmap=plt.cm.RdYlBu)
+            scatter_lda = ax_lda.scatter(X_test[:, 0], X_test[:, 1], c=y_test, cmap=plt.cm.RdYlBu, edgecolors='k')
+            ax_lda.set_xlabel('PC1')
+            ax_lda.set_ylabel('PC2')
+            ax_lda.set_title('LDA Decision Boundary')
+            st.pyplot(fig_lda)
 
         if run_knn:
-            knn = KNeighborsClassifier(n_neighbors=k)
-            knn.fit(X_train, y_train)
-            y_pred_knn = knn.predict(X_test)
+            if optimize_knn:
+                param_grid_knn = {'n_neighbors': range(1, min(21, len(y_train)//2 + 1))}
+                knn_grid = GridSearchCV(KNeighborsClassifier(), param_grid_knn, cv=5)
+                knn_grid.fit(X_train, y_train)
+                best_knn = knn_grid.best_estimator_
+                best_params_knn = knn_grid.best_params_
+                best_k = best_params_knn['n_neighbors']
+                st.write(f"**Optimized KNN Parameters:** {best_params_knn}")
+            else:
+                best_knn = KNeighborsClassifier(n_neighbors=k)
+                best_knn.fit(X_train, y_train)
+                best_params_knn = {'n_neighbors': k}
+                best_k = k
+                st.write(f"**KNN Parameters:** {best_params_knn}")
+            y_pred_knn = best_knn.predict(X_test)
+            acc_knn = accuracy_score(y_test, y_pred_knn)
 
             with col4:
                 st.subheader("KNN Confusion Matrix")
                 cm_knn = confusion_matrix(y_test, y_pred_knn)
-                fig_cm_knn = px.imshow(cm_knn, text_auto=True, x=['Class 1', 'Class 2'], y=['Class 1', 'Class 2'],
-                                       color_continuous_scale='Blues', title=f"KNN (k={k}) Confusion Matrix")
+                fig_cm_knn = px.imshow(cm_knn, text_auto=True, x=[class1, class2], y=[class1, class2],
+                                       color_continuous_scale='Blues', title=f"KNN (k={best_k}) Confusion Matrix")
                 st.plotly_chart(fig_cm_knn, use_container_width=True)
+                st.write(f"**Accuracy:** {acc_knn:.2f}")
+
+            # KNN loading matrix
+            st.subheader("KNN Loading Matrix")
+            st.write("KNN does not have a loading matrix (non-parametric model).")
 
             # KNN boundary plot
-            Z_knn = knn.predict(np.c_[xx.ravel(), yy.ravel()])
+            Z_knn = best_knn.predict(np.c_[xx.ravel(), yy.ravel()])
             Z_knn = Z_knn.reshape(xx.shape)
 
-            fig_knn = go.Figure()
-            fig_knn.add_trace(go.Contour(x=xx[0], y=yy[:,0], z=Z_knn, colorscale='RdYlBu', showscale=False))
-            scatter_knn = go.Scatter(x=X_test[:, 0], y=X_test[:, 1], mode='markers',
-                                     marker=dict(color=y_test, colorscale='RdYlBu', size=8))
-            fig_knn.add_trace(scatter_knn)
-            fig_knn.update_layout(title=f'KNN (k={k}) Decision Boundary',
-                                  xaxis_title='PC1', yaxis_title='PC2')
-            st.plotly_chart(fig_knn, use_container_width=True)
+            fig_knn, ax_knn = plt.subplots(figsize=(8, 6))
+            ax_knn.contourf(xx, yy, Z_knn, alpha=0.8, cmap=plt.cm.RdYlBu)
+            scatter_knn = ax_knn.scatter(X_test[:, 0], X_test[:, 1], c=y_test, cmap=plt.cm.RdYlBu, edgecolors='k')
+            ax_knn.set_xlabel('PC1')
+            ax_knn.set_ylabel('PC2')
+            ax_knn.set_title(f'KNN (k={best_k}) Decision Boundary')
+            st.pyplot(fig_knn)
     else:
         st.warning("Need at least 2 PCs for classification visualization.")
    
