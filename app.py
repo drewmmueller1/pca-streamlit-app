@@ -59,10 +59,6 @@ if use_precomputed:
         st.stop()
     # No preprocessing or scaling for pre-computed PCs
     X_scaled = X.values
-    X_pca = X_scaled
-    n_total_pcs = X_pca.shape[1]
-    var_ratios = np.full(n_total_pcs, 1.0 / n_total_pcs)
-    pca_full = None
     is_precomputed = True
 else:
     if uploaded_file is None:
@@ -131,21 +127,32 @@ else:
         X_scaled = scaler.fit_transform(X)
     else:
         X_scaled = X.values # Already standardized
-    # Compute full PCA for reuse
+    is_precomputed = False
+
+# Data Filtering
+st.subheader("Data Filtering")
+unique_labels = sorted(y.unique())
+excluded_labels = st.multiselect("Labels to exclude", unique_labels, default=[])
+mask_include = ~y.isin(excluded_labels)
+X_scaled = X_scaled[mask_include]
+y = y[mask_include]
+
+# Compute PCA on filtered data
+if is_precomputed:
+    X_pca = X_scaled  # Precomputed PCs are the data
+    n_total_pcs = X_pca.shape[1]
+    var_ratios = np.full(n_total_pcs, 1.0 / n_total_pcs) if n_total_pcs > 0 else np.array([])
+    pca_full = None
+else:
     pca_full = PCA()
     X_pca = pca_full.fit_transform(X_scaled)
     n_total_pcs = X_pca.shape[1]
     var_ratios = pca_full.explained_variance_ratio_
-    is_precomputed = False
 
 # Common code after data preparation
 # Store X_pca_2d for classification
 if n_total_pcs >= 2:
-    if is_precomputed:
-        X_pca_2d_global = X_pca[:, :2]
-    else:
-        pca_2d_global = PCA(n_components=2)
-        X_pca_2d_global = pca_2d_global.fit_transform(X_scaled)
+    X_pca_2d_global = X_pca[:, :2]
     y_global = y
 else:
     X_pca_2d_global = None
@@ -157,11 +164,11 @@ show_2d = st.sidebar.checkbox("Show 2D PCA Plot (Static)", value=True)
 show_3d = st.sidebar.checkbox("Show 3D PCA Plot (Interactive)", value=True)
 show_scree = st.sidebar.checkbox("Show Scree Plot", value=True)
 if show_scree:
-    # Find min n for >=99% cum var
+    # Find min n for >=99% and >=99.9% cum var
     cum_var = np.cumsum(var_ratios)
     n_99 = np.argmax(cum_var >= 0.99) + 1 if np.any(cum_var >= 0.99) else n_total_pcs
-    n_scree_default = n_99
-    n_scree = st.sidebar.slider("Number of PCs to Show in Scree Plot", 1, n_total_pcs, n_scree_default)
+    n_999 = np.argmax(cum_var >= 0.999) + 1 if np.any(cum_var >= 0.999) else n_total_pcs
+    n_scree = st.sidebar.slider("Number of PCs to Show in Scree Plot", 1, n_999, n_99)
 else:
     n_scree = n_total_pcs
 show_loadings = st.sidebar.checkbox("Show Loadings Plot (Top 3 PCs)", value=True)
@@ -532,4 +539,4 @@ else:
 
 # Footer
 st.markdown("---")
-st.caption("Reusable for any dataset. Please let me know if you run into any errors or bugs!")
+st.caption("Reusable for any dataset. Let me know if you have questions or find a bug!")
