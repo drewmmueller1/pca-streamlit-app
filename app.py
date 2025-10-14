@@ -262,7 +262,7 @@ if show_3d and n_total_pcs >= 3:
 elif show_3d:
     st.warning("Need at least 3 features for 3D plot.")
 
-# 3. Scree Plot (Dynamic: >=99% var + 2 more PCs)
+# 3. Scree Plot (Dynamic: >=99% var + 4 more PCs)
 if show_scree:
     st.subheader("Scree Plot: Variance Explained")
     if is_precomputed:
@@ -270,9 +270,9 @@ if show_scree:
     # Find min n for >=99% cum var
     cum_var = np.cumsum(var_ratios)
     n_99 = np.argmax(cum_var >= 0.99) + 1 if np.any(cum_var >= 0.99) else n_total_pcs
-    n_scree = min(n_99 + 2, n_total_pcs)
+    n_scree = min(n_99 + 4, n_total_pcs)  # Show PCs up to >=99% + next 4
     # Use var_ratios directly
-    var_ratio = var_ratios[:n_scree] * 100 # % variance
+    var_ratio = var_ratios[:n_scree] * 100  # % variance
     # Create subplot: bar for %var
     fig_scree = make_subplots(specs=[[{"secondary_y": False}]])
     # Bar: % variance per PC
@@ -285,7 +285,7 @@ if show_scree:
     for i, v in enumerate(var_ratio):
         fig_scree.add_annotation(x=f'PC{i+1}', y=v, text=f'{v:.1f}%', showarrow=False,
                                  yshift=10, font=dict(size=10))
-    fig_scree.update_layout(title=f"Scree Plot (Showing {n_scree} PCs: ≥99% + 2 more)",
+    fig_scree.update_layout(title=f"Scree Plot (Showing {n_scree} PCs: ≥99% + 4 more)",
                             xaxis_title="Principal Components",
                             yaxis_title="% Variance Explained")
     fig_scree.update_yaxes(range=[0, var_ratio.max() * 1.1], secondary_y=False)
