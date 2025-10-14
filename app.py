@@ -4,33 +4,39 @@ import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.cluster import KMeans
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
+from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis as QDA
+from sklearn.naive_bayes import GaussianNB
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.metrics import confusion_matrix, accuracy_score
+from mlxtend.plotting import plot_decision_regions
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.metrics import confusion_matrix, accuracy_score
-from mlxtend.plotting import plot_decision_regions
+
 # Title and instructions
 st.title("PCA Visualization App for Lab Data")
 st.markdown("""
 Upload a CSV file with:
 - For features: Numerical columns for features (e.g., measurements).
-- Replicate measurements must have same name or seperateed by _. For example, "Sample1_1","Sample1_2","Sample2_1","Sample2_2".
+- Replicate measurements must have same name or separated by _. For example, "Sample1_1","Sample1_2","Sample2_1","Sample2_2".
 - Data can be uploaded row-wise or column-wise with the following options:
   - If row-wise: Each row is a sample, and the first column is a 'label' column. Column 1 row 1 must be labeled "label"
   - If column-wise: Each column is a sample, and the first row is a 'label' row. Column 1 must be the variables (i.e. wavelengths).
 - For pre-computed PCs: Columns named PC1, PC2, ..., and a 'label' column. Enable the checkbox in the sidebar to use this mode and upload the PC CSV.
 """)
+
 # Sidebar mode selection
 st.sidebar.header("Mode Selection")
 use_precomputed = st.sidebar.checkbox("Use pre-computed PC scores", value=False)
+
 # File uploaders
 uploaded_file = st.file_uploader("Upload feature CSV", type="csv")
 pc_uploaded_file = st.file_uploader("Upload PC scores CSV", type="csv")
+
 if use_precomputed:
     if pc_uploaded_file is None:
         st.info("Please upload the PC scores CSV to proceed.")
@@ -131,6 +137,7 @@ else:
     n_total_pcs = X_pca.shape[1]
     var_ratios = pca_full.explained_variance_ratio_
     is_precomputed = False
+
 # Common code after data preparation
 # Store X_pca_2d for classification
 if n_total_pcs >= 2:
@@ -143,6 +150,7 @@ if n_total_pcs >= 2:
 else:
     X_pca_2d_global = None
     y_global = None
+
 # Sidebar options (toggles + save slider + loadings type)
 st.sidebar.header("Plot Options")
 show_2d = st.sidebar.checkbox("Show 2D PCA Plot (Static)", value=True)
@@ -153,12 +161,16 @@ if show_loadings and not is_precomputed:
     loadings_type = st.sidebar.selectbox("Loadings Plot Type", ["Bar Graph (Discrete, e.g., GCMS)", "Connected Scatterplot (Continuous, e.g., Spectroscopy)"], index=0)
 else:
     loadings_type = "Bar Graph (Discrete, e.g., GCMS)" # Default if not shown
+
 st.sidebar.header("Download Options")
 num_save_pcs = st.sidebar.slider("Number of PCs to Save", 1, min(10, n_total_pcs), 3)
+
 # Classification options in sidebar
 st.sidebar.header("Classification Options")
-run_lda = st.sidebar.checkbox("Run Linear Discriminant Analysis (LDA)")
-optimize_lda = st.sidebar.checkbox("Optimize LDA parameters") if run_lda else False
+run_da = st.sidebar.checkbox("Run Discriminant Analysis")
+if run_da:
+    da_type = st.sidebar.selectbox("Discriminant Analysis Type", ["LDA", "QDA", "GaussianNB"], index=0)
+    optimize_da = st.sidebar.checkbox("Optimize Discriminant Analysis parameters")
 run_knn = st.sidebar.checkbox("Run K-Nearest Neighbors (KNN)")
 optimize_knn = st.sidebar.checkbox("Optimize KNN parameters") if run_knn else False
 if run_knn and not optimize_knn:
@@ -170,6 +182,7 @@ if run_kmeans:
     n_clusters = st.sidebar.slider("Number of clusters", 2, 10, 3)
 else:
     n_clusters = 3
+
 # Label Configuration
 st.subheader("Label Configuration")
 label_mode = st.radio("Label Mode", ["Default Labels", "Combined Groups"], index=0)
@@ -192,6 +205,7 @@ else:
     else:
         selected_for_a, selected_for_b, rename_a, rename_b = [], [], "Group A", "Group B"
         apply_to_plots = False
+
 # 1. 2D PCA Plot (Static, first 2 PCs)
 if show_2d and n_total_pcs >= 2:
     st.subheader("2D PCA Plot (PC1 vs PC2)")
@@ -222,6 +236,7 @@ if show_2d and n_total_pcs >= 2:
     plt.close(fig)
 elif show_2d:
     st.warning("Need at least 2 features for 2D plot.")
+
 # 2. 3D PCA Plot (Interactive, FIXED to first 3 PCs only—no options to change)
 if show_3d and n_total_pcs >= 3:
     st.subheader("3D PCA Plot (Interactive: Rotate/Zoom with Mouse)")
@@ -246,6 +261,7 @@ if show_3d and n_total_pcs >= 3:
     st.plotly_chart(fig_3d, use_container_width=True)
 elif show_3d:
     st.warning("Need at least 3 features for 3D plot.")
+
 # 3. Scree Plot (Dynamic: >=99% var + 2 more PCs)
 if show_scree:
     st.subheader("Scree Plot: Variance Explained")
@@ -276,6 +292,7 @@ if show_scree:
     st.plotly_chart(fig_scree, use_container_width=True)
     # Total variance info
     st.info(f"Total variance explained by shown PCs: {cum_var[n_scree-1]:.1f}% (≥99% reached at PC{n_99})")
+
 # 4. Factor Loadings Plot (Toggle between Bar and Connected Scatterplot)
 if show_loadings:
     if pca_full is None:
@@ -339,6 +356,7 @@ if show_loadings:
             # Show loadings table
             st.subheader("Loadings Table (Top 3 PCs)")
             st.dataframe(loadings)
+
 # Download buttons (always available after upload, but use num_save_pcs)
 st.subheader("Download PCA Results")
 col1, col2 = st.columns(2)
@@ -364,6 +382,7 @@ with col2:
     else:
         st.info("Loadings not available for pre-computed mode.")
 st.info(f"Downloads include top {num_save_pcs} PCs.")
+
 # Clustering section
 if run_kmeans and X_pca_2d_global is not None:
     st.header("Clustering Results")
@@ -376,9 +395,10 @@ if run_kmeans and X_pca_2d_global is not None:
                              color_discrete_sequence=px.colors.qualitative.Set1)
     st.plotly_chart(fig_cluster, use_container_width=True)
     st.info(f"Clustering completed with {n_clusters} clusters.")
+
 # Classification section (outputs in main body)
 st.header("Classification Results")
-if X_pca_2d_global is not None and (run_lda or run_knn):
+if X_pca_2d_global is not None and (run_da or run_knn):
     split_data = st.checkbox("Split into train/test sets")
     if split_data:
         test_size = st.slider("Test size", 0.1, 0.5, 0.2)
@@ -408,35 +428,62 @@ if X_pca_2d_global is not None and (run_lda or run_knn):
         )
     else:
         X_train, X_test, y_train_enc, y_test_enc = X_selected, X_selected, y_encoded, y_encoded
-    if run_lda:
-        if optimize_lda:
-            param_grid_lda = {'solver': ['svd', 'lsqr', 'eigen']}
-            lda_grid = GridSearchCV(LDA(), param_grid_lda, cv=5)
-            lda_grid.fit(X_train, y_train_enc)
-            best_lda = lda_grid.best_estimator_
-            best_params_lda = lda_grid.best_params_
-            st.write(f"**Optimized LDA Parameters:** {best_params_lda}")
-        else:
-            best_lda = LDA()
-            best_lda.fit(X_train, y_train_enc)
-            best_params_lda = {'solver': 'svd'}
-            st.write(f"**LDA Parameters:** {best_params_lda}")
-        y_pred_lda = best_lda.predict(X_test)
-        acc_lda = accuracy_score(y_test_enc, y_pred_lda)
-        st.subheader(f"LDA Confusion Matrix{title_suffix}")
-        cm_lda = confusion_matrix(y_test_enc, y_pred_lda)
-        fig_cm_lda = px.imshow(cm_lda, text_auto=True, x=unique_y, y=unique_y,
-                               color_continuous_scale='Blues', title=f"LDA Confusion Matrix{title_suffix}")
-        st.plotly_chart(fig_cm_lda, use_container_width=True)
-        st.write(f"**Accuracy:** {acc_lda:.2f}")
-        # LDA decision boundary using plot_decision_regions
-        st.subheader(f"LDA Decision Boundary{title_suffix}")
-        fig_lda, ax_lda = plt.subplots(figsize=(8, 6))
-        plot_decision_regions(X_selected, y_encoded, clf=best_lda, legend=2, ax=ax_lda)
-        ax_lda.set_xlabel('PC1')
-        ax_lda.set_ylabel('PC2')
-        ax_lda.set_title(f'LDA Decision Boundary{title_suffix}')
-        st.pyplot(fig_lda)
+    if run_da:
+        if da_type == "LDA":
+            if optimize_da:
+                param_grid_da = {'solver': ['svd', 'lsqr', 'eigen']}
+                da_grid = GridSearchCV(LDA(), param_grid_da, cv=5)
+                da_grid.fit(X_train, y_train_enc)
+                best_da = da_grid.best_estimator_
+                best_params_da = da_grid.best_params_
+                st.write(f"**Optimized LDA Parameters:** {best_params_da}")
+            else:
+                best_da = LDA()
+                best_da.fit(X_train, y_train_enc)
+                best_params_da = {'solver': 'svd'}
+                st.write(f"**LDA Parameters:** {best_params_da}")
+        elif da_type == "QDA":
+            if optimize_da:
+                param_grid_da = {'reg_param': [0.0, 0.1, 0.5, 1.0]}
+                da_grid = GridSearchCV(QDA(), param_grid_da, cv=5)
+                da_grid.fit(X_train, y_train_enc)
+                best_da = da_grid.best_estimator_
+                best_params_da = da_grid.best_params_
+                st.write(f"**Optimized QDA Parameters:** {best_params_da}")
+            else:
+                best_da = QDA()
+                best_da.fit(X_train, y_train_enc)
+                best_params_da = {'reg_param': 0.0}
+                st.write(f"**QDA Parameters:** {best_params_da}")
+        else: # GaussianNB
+            if optimize_da:
+                param_grid_da = {'var_smoothing': np.logspace(0,-9, num=10)}
+                da_grid = GridSearchCV(GaussianNB(), param_grid_da, cv=5)
+                da_grid.fit(X_train, y_train_enc)
+                best_da = da_grid.best_estimator_
+                best_params_da = da_grid.best_params_
+                st.write(f"**Optimized GaussianNB Parameters:** {best_params_da}")
+            else:
+                best_da = GaussianNB()
+                best_da.fit(X_train, y_train_enc)
+                best_params_da = {'var_smoothing': 1e-9}
+                st.write(f"**GaussianNB Parameters:** {best_params_da}")
+        y_pred_da = best_da.predict(X_test)
+        acc_da = accuracy_score(y_test_enc, y_pred_da)
+        st.subheader(f"{da_type} Confusion Matrix{title_suffix}")
+        cm_da = confusion_matrix(y_test_enc, y_pred_da)
+        fig_cm_da = px.imshow(cm_da, text_auto=True, x=unique_y, y=unique_y,
+                              color_continuous_scale='Blues', title=f"{da_type} Confusion Matrix{title_suffix}")
+        st.plotly_chart(fig_cm_da, use_container_width=True)
+        st.write(f"**Accuracy:** {acc_da:.2f}")
+        # DA decision boundary using plot_decision_regions
+        st.subheader(f"{da_type} Decision Boundary{title_suffix}")
+        fig_da, ax_da = plt.subplots(figsize=(8, 6))
+        plot_decision_regions(X_selected, y_encoded, clf=best_da, legend=2, ax=ax_da)
+        ax_da.set_xlabel('PC1')
+        ax_da.set_ylabel('PC2')
+        ax_da.set_title(f'{da_type} Decision Boundary{title_suffix}')
+        st.pyplot(fig_da)
     if run_knn:
         if optimize_knn:
             param_grid_knn = {'n_neighbors': range(1, min(21, len(y_train_enc)//2 + 1))}
@@ -477,7 +524,8 @@ if X_pca_2d_global is not None and (run_lda or run_knn):
 elif X_pca_2d_global is None:
     st.warning("Need at least 2 PCs for classification visualization.")
 else:
-    st.info("Enable LDA or KNN in the sidebar to run classification.")
+    st.info("Enable Discriminant Analysis or KNN in the sidebar to run classification.")
+
 # Footer
 st.markdown("---")
-st.caption("Reusable for any dataset. Built with Streamlit & scikit-learn. Questions? Ask Drew!")
+st.caption("Reusable for any dataset. Questions? Ask Drew!")
