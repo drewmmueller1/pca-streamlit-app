@@ -8,8 +8,8 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis as QDA
 from sklearn.naive_bayes import GaussianNB
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.metrics import confusion_matrix, accuracy_score
+from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+from sklearn.metrics import confusion_matrix, accuracy_score, silhouette_score, mean_squared_error
 from mlxtend.plotting import plot_decision_regions
 import plotly.express as px
 import plotly.graph_objects as go
@@ -59,6 +59,10 @@ if use_precomputed:
         st.stop()
     # No preprocessing or scaling for pre-computed PCs
     X_scaled = X.values
+    X_pca = X_scaled
+    n_total_pcs = X_pca.shape[1]
+    var_ratios = np.full(n_total_pcs, 1.0 / n_total_pcs)
+    pca_full = None
     is_precomputed = True
 else:
     if uploaded_file is None:
@@ -194,8 +198,17 @@ else:
     k = 5 # Default
 run_kmeans = st.sidebar.checkbox("Run K-Means Clustering")
 if run_kmeans:
-    n_clusters = st.sidebar.slider("Number of clusters", 2, 10, 3)
+    auto_optimize_k = st.sidebar.checkbox("Auto-optimize K", value=False)
+    if not auto_optimize_k:
+        n_clusters = st.sidebar.slider("Number of clusters", 2, 10, 3)
+    show_elbow = st.sidebar.checkbox("Show Elbow Plot", value=True)
+    show_silhouette = st.sidebar.checkbox("Show Silhouette Plot", value=True)
+    show_cluster_profile = st.sidebar.checkbox("Show Cluster Profile Plots", value=True)
 else:
+    auto_optimize_k = False
+    show_elbow = False
+    show_silhouette = False
+    show_cluster_profile = False
     n_clusters = 3
 
 # Label Configuration
@@ -397,6 +410,20 @@ st.info(f"Downloads include top {num_save_pcs} PCs.")
 # Clustering section
 if run_kmeans and X_pca_2d_global is not None:
     st.header("Clustering Results")
+    if auto_optimize_k:
+        # Use elbow to find optimal K
+        inertias = []
+        k_range = range(1, 11)
+        for k_i in k_range:
+            kmeans_i = KMeans(n_clusters=k_i, random_state=42, n_init=10)
+            kmeans_i.fit(X_pca_2d_global)
+            inertias.append(kmeans_i.inertia_)
+        # Find elbow
+        diffs = np.diff(inertias)
+        diffs2 = np.diff(diffs)
+        optimal_k = np.argmin(diffs2) + 2  # Second derivative minimum
+        n_clusters = optimal_k
+        st.info(f"Auto-optimized K: {n_clusters}")
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     cluster_labels = kmeans.fit_predict(X_pca_2d_global)
     df_cluster = pd.DataFrame(X_pca_2d_global, columns=['PC1', 'PC2'])
@@ -406,6 +433,34 @@ if run_kmeans and X_pca_2d_global is not None:
                              color_discrete_sequence=px.colors.qualitative.Set1)
     st.plotly_chart(fig_cluster, use_container_width=True)
     st.info(f"Clustering completed with {n_clusters} clusters.")
+    if show_elbow:
+        st.subheader("Elbow Plot")
+        inertias = []
+        k_range = range(1, 11)
+        for k_i in k_range:
+            kmeans_i = KMeans(n_clusters=k_i, random_state=42, n_init=10)
+            kmeans_i.fit(X_pca_2d_global)
+            inertias.append(kmeans_i.inertia_)
+        fig_elbow = px.line(x=k_range, y=inertias, markers=True, title="Elbow Plot for Optimal K")
+        fig_elbow.update_layout(xaxis_title="Number of clusters K", yaxis_title="Inertia")
+        st.plotly_chart(fig_elbow)
+    if show_silhouette:
+        st.subheader("Silhouette Plot")
+        silhouettes = []
+        for k_i in range(2, 11):
+            kmeans_i = KMeans(n_clusters=k_i, random_state=42, n_init=10)
+            cluster_labels_i = kmeans_i.fit_predict(X_pca_2d_global)
+            silhouettes.append(silhouette_score(X_pca_2d_global, cluster_labels_i))
+        fig_sil = px.line(x=range(2, 11), y=silhouettes, markers=True, title="Silhouette Score for Optimal K")
+        fig_sil.update_layout(xaxis_title="Number of clusters K", yaxis_title="Silhouette Score")
+        st.plotly_chart(fig_sil)
+    if show_cluster_profile:
+        st.subheader("Cluster Profile Plots")
+        centroids = kmeans.cluster_centers_
+        df_centroids = pd.DataFrame(centroids, columns=['PC1', 'PC2'])
+        df_centroids['cluster'] = range(n_clusters)
+        fig_profile = px.bar(df_centroids.melt(id_vars='cluster'), x='cluster', y='value', color='variable', barmode='group', title="Cluster Centroids on PC1 and PC2")
+        st.plotly_chart(fig_profile)
 
 # Classification section (outputs in main body)
 st.header("Classification Results")
@@ -495,6 +550,13 @@ if X_pca_2d_global is not None and (run_da or run_knn):
         ax_da.set_ylabel('PC2')
         ax_da.set_title(f'{da_type} Decision Boundary{title_suffix}')
         st.pyplot(fig_da)
+        # RMSECV plot - for classification, use error rate
+        st.subheader(f"{da_type} Cross-Validation Error Plot")
+        cv_scores = cross_val_score(best_da, X_selected, y_encoded, cv=5, scoring='neg_mean_squared_error')
+        rmse_cv = np.sqrt(-cv_scores)
+        fig_rmsecv = px.line(x=range(1, 6), y=rmse_cv, markers=True, title=f"{da_type} RMSECV")
+        fig_rmsecv.update_layout(xaxis_title="Fold", yaxis_title="RMSE")
+        st.plotly_chart(fig_rmsecv)
     if run_knn:
         if optimize_knn:
             param_grid_knn = {'n_neighbors': range(1, min(21, len(y_train_enc)//2 + 1))}
@@ -532,6 +594,17 @@ if X_pca_2d_global is not None and (run_da or run_knn):
         ax_knn.set_ylabel('PC2')
         ax_knn.set_title(knn_db_title)
         st.pyplot(fig_knn)
+        # RMSECV plot for KNN - vary K
+        st.subheader("KNN Cross-Validation Error Plot")
+        rmse_cv = []
+        k_range = range(1, min(21, len(X_selected)//2 + 1))
+        for k_i in k_range:
+            knn_i = KNeighborsClassifier(n_neighbors=k_i)
+            cv_scores = cross_val_score(knn_i, X_selected, y_encoded, cv=5, scoring='neg_mean_squared_error')
+            rmse_cv.append(np.mean(np.sqrt(-cv_scores)))
+        fig_rmsecv = px.line(x=k_range, y=rmse_cv, markers=True, title="KNN RMSECV vs K")
+        fig_rmsecv.update_layout(xaxis_title="K", yaxis_title="RMSECV")
+        st.plotly_chart(fig_rmsecv)
 elif X_pca_2d_global is None:
     st.warning("Need at least 2 PCs for classification visualization.")
 else:
@@ -539,4 +612,4 @@ else:
 
 # Footer
 st.markdown("---")
-st.caption("Reusable for any dataset. Let me know if you have questions or find a bug!")
+st.caption("Reusable for any dataset. Please let me know if you find any bugs or have any questions.")
