@@ -156,6 +156,14 @@ st.sidebar.header("Plot Options")
 show_2d = st.sidebar.checkbox("Show 2D PCA Plot (Static)", value=True)
 show_3d = st.sidebar.checkbox("Show 3D PCA Plot (Interactive)", value=True)
 show_scree = st.sidebar.checkbox("Show Scree Plot", value=True)
+if show_scree:
+    # Find min n for >=99% cum var
+    cum_var = np.cumsum(var_ratios)
+    n_99 = np.argmax(cum_var >= 0.99) + 1 if np.any(cum_var >= 0.99) else n_total_pcs
+    n_scree_default = n_99
+    n_scree = st.sidebar.slider("Number of PCs to Show in Scree Plot", 1, n_total_pcs, n_scree_default)
+else:
+    n_scree = n_total_pcs
 show_loadings = st.sidebar.checkbox("Show Loadings Plot (Top 3 PCs)", value=True)
 if show_loadings and not is_precomputed:
     loadings_type = st.sidebar.selectbox("Loadings Plot Type", ["Bar Graph (Discrete, e.g., GCMS)", "Connected Scatterplot (Continuous, e.g., Spectroscopy)"], index=0)
@@ -262,15 +270,11 @@ if show_3d and n_total_pcs >= 3:
 elif show_3d:
     st.warning("Need at least 3 features for 3D plot.")
 
-# 3. Scree Plot (Dynamic: >=99% var + 4 more PCs)
+# 3. Scree Plot (Dynamic: User-specified number of PCs with default at >=99% var)
 if show_scree:
     st.subheader("Scree Plot: Variance Explained")
     if is_precomputed:
         st.warning("Using equal variance assumption for pre-computed PCs.")
-    # Find min n for >=99% cum var
-    cum_var = np.cumsum(var_ratios)
-    n_99 = np.argmax(cum_var >= 0.99) + 1 if np.any(cum_var >= 0.99) else n_total_pcs
-    n_scree = min(n_99 + 4, n_total_pcs)  # Show PCs up to >=99% + next 4
     # Use var_ratios directly
     var_ratio = var_ratios[:n_scree] * 100  # % variance
     # Create subplot: bar for %var
@@ -285,13 +289,13 @@ if show_scree:
     for i, v in enumerate(var_ratio):
         fig_scree.add_annotation(x=f'PC{i+1}', y=v, text=f'{v:.1f}%', showarrow=False,
                                  yshift=10, font=dict(size=10))
-    fig_scree.update_layout(title=f"Scree Plot (Showing {n_scree} PCs: ≥99% + 4 more)",
+    fig_scree.update_layout(title=f"Scree Plot (Showing {n_scree} PCs)",
                             xaxis_title="Principal Components",
                             yaxis_title="% Variance Explained")
     fig_scree.update_yaxes(range=[0, var_ratio.max() * 1.1], secondary_y=False)
     st.plotly_chart(fig_scree, use_container_width=True)
     # Total variance info
-    st.info(f"Total variance explained by shown PCs: {cum_var[n_scree-1]:.1f}% (≥99% reached at PC{n_99})")
+    st.info(f"Total variance explained by shown PCs: {np.sum(var_ratios[:n_scree]):.1%} (≥99% reached at PC{n_99})")
 
 # 4. Factor Loadings Plot (Toggle between Bar and Connected Scatterplot)
 if show_loadings:
@@ -528,4 +532,4 @@ else:
 
 # Footer
 st.markdown("---")
-st.caption("Reusable for any dataset. Questions? Ask Drew!")
+st.caption("Reusable for any dataset. Please let me know if you run into any errors or bugs!")
