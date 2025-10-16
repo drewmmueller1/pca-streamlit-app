@@ -288,7 +288,8 @@ if show_3d and n_total_pcs >= 3:
                          ))
     st.plotly_chart(fig_3d, use_container_width=True)
     
-    # Download option with white background and black text
+    # Download option as PNG image with white background and black text
+    # Note: Requires 'kaleido' package: pip install kaleido
     fig_3d_white = fig_3d.copy()
     fig_3d_white.update_layout(
         template='plotly_white',
@@ -301,13 +302,16 @@ if show_3d and n_total_pcs >= 3:
         ),
         paper_bgcolor='white'
     )
-    html = fig_3d_white.to_html(include_plotlyjs='cdn', div_id='3d-pca-plot')
-    st.download_button(
-        label="Download 3D Plot (White BG, Black Text)",
-        data=html,
-        file_name="3d_pca_plot.html",
-        mime="text/html"
-    )
+    try:
+        img_bytes = fig_3d_white.to_image(format="png", width=800, height=600)
+        st.download_button(
+            label="Download 3D Plot (White BG, Black Text)",
+            data=img_bytes,
+            file_name="3d_pca_plot.png",
+            mime="image/png"
+        )
+    except Exception as e:
+        st.warning(f"Image export failed: {str(e)}. Install 'kaleido' to enable PNG download.")
 elif show_3d:
     st.warning("Need at least 3 features for 3D plot.")
 
