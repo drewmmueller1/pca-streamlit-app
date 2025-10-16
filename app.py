@@ -287,6 +287,27 @@ if show_3d and n_total_pcs >= 3:
                              zaxis_title=f"PC3 ({explained_3d[2]:.1%})"
                          ))
     st.plotly_chart(fig_3d, use_container_width=True)
+    
+    # Download option with white background and black text
+    fig_3d_white = fig_3d.copy()
+    fig_3d_white.update_layout(
+        template='plotly_white',
+        font=dict(color='black'),
+        scene=dict(
+            xaxis=dict(title_font_color='black', tickfont_color='black'),
+            yaxis=dict(title_font_color='black', tickfont_color='black'),
+            zaxis=dict(title_font_color='black', tickfont_color='black'),
+            bgcolor='white'
+        ),
+        paper_bgcolor='white'
+    )
+    html = fig_3d_white.to_html(include_plotlyjs='cdn', div_id='3d-pca-plot')
+    st.download_button(
+        label="Download 3D Plot (White BG, Black Text)",
+        data=html,
+        file_name="3d_pca_plot.html",
+        mime="text/html"
+    )
 elif show_3d:
     st.warning("Need at least 3 features for 3D plot.")
 
