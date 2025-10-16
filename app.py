@@ -288,8 +288,10 @@ if show_3d and n_total_pcs >= 3:
     df_plot['label'] = y_plot
     fig_3d = px.scatter_3d(df_plot, x='PC1', y='PC2', z='PC3', color='label',
                            color_discrete_sequence=px.colors.qualitative.Set1)
-    fig_3d.update_traces(marker=dict(size=5))
+    fig_3d.update_traces(marker=dict(size=5),
+                         colorbar=dict(title_font=dict(color='black'), tickfont=dict(color='black')))
     fig_3d.update_layout(title="Interactive 3D PCA Plot (Fixed to PC1-PC3)",
+                         title_font_color='black',
                          paper_bgcolor='white',
                          plot_bgcolor='white',
                          font=dict(color='black'),
@@ -327,6 +329,7 @@ if show_scree:
         fig_scree.add_annotation(x=f'PC{i+1}', y=v, text=f'{v:.1f}%', showarrow=False,
                                  yshift=10, font=dict(size=10, color='black'))
     fig_scree.update_layout(title=f"Scree Plot (Showing {n_scree} PCs)",
+                            title_font_color='black',
                             xaxis_title="Principal Components",
                             yaxis_title="% Variance Explained",
                             paper_bgcolor='white',
@@ -379,6 +382,7 @@ if show_loadings:
                 fig_loadings.update_layout(barmode='group',
                                            height=400, showlegend=True,
                                            title="Loadings: Grouped Bar Graph (Abs Values)",
+                                           title_font_color='black',
                                            xaxis_title="Variables",
                                            yaxis_title="Loading Magnitude",
                                            paper_bgcolor='white',
@@ -403,7 +407,8 @@ if show_loadings:
                 fig_loadings.update_traces(line=dict(width=2, dash='solid')) # Continuous solid lines
                 fig_loadings.update_xaxes(tickangle=45, tickfont=dict(color='black'), title_font=dict(color='black'))
                 fig_loadings.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'),
-                                           legend=dict(font=dict(color='black')))
+                                           legend=dict(font=dict(color='black')),
+                                           title_font_color='black')
                 if len(original_vars) > 50:
                     st.warning("Many variables (>50)—zoom/pan the plot for details in spectroscopy data.")
             st.plotly_chart(fig_loadings, use_container_width=True)
@@ -461,8 +466,10 @@ if run_kmeans and X_pca_2d_global is not None:
     fig_cluster = px.scatter(df_cluster, x='PC1', y='PC2', color='cluster',
                              title=f"K-Means Clustering (k={n_clusters}) on PC1 vs PC2",
                              color_discrete_sequence=px.colors.qualitative.Set1)
+    fig_cluster.update_traces(colorbar=dict(title_font=dict(color='black'), tickfont=dict(color='black')))
     fig_cluster.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'),
-                              legend=dict(font=dict(color='black')))
+                              legend=dict(font=dict(color='black')),
+                              title_font_color='black')
     fig_cluster.update_xaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
     fig_cluster.update_yaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
     st.plotly_chart(fig_cluster, use_container_width=True)
@@ -477,7 +484,8 @@ if run_kmeans and X_pca_2d_global is not None:
             inertias.append(kmeans_i.inertia_)
         fig_elbow = px.line(x=k_range, y=inertias, markers=True, title="Elbow Plot for Optimal K")
         fig_elbow.update_layout(xaxis_title="Number of clusters K", yaxis_title="Inertia",
-                                paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'))
+                                paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'),
+                                title_font_color='black')
         fig_elbow.update_xaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
         fig_elbow.update_yaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
         st.plotly_chart(fig_elbow)
@@ -490,7 +498,8 @@ if run_kmeans and X_pca_2d_global is not None:
             silhouettes.append(silhouette_score(X_pca_2d_global, cluster_labels_i))
         fig_sil = px.line(x=range(2, 11), y=silhouettes, markers=True, title="Silhouette Score for Optimal K")
         fig_sil.update_layout(xaxis_title="Number of clusters K", yaxis_title="Silhouette Score",
-                              paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'))
+                              paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'),
+                              title_font_color='black')
         fig_sil.update_xaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
         fig_sil.update_yaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
         st.plotly_chart(fig_sil)
@@ -501,7 +510,8 @@ if run_kmeans and X_pca_2d_global is not None:
         df_centroids['cluster'] = range(n_clusters)
         fig_profile = px.bar(df_centroids.melt(id_vars='cluster'), x='cluster', y='value', color='variable', barmode='group', title="Cluster Centroids on PC1 and PC2")
         fig_profile.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'),
-                                  legend=dict(font=dict(color='black')))
+                                  legend=dict(font=dict(color='black')),
+                                  title_font_color='black')
         fig_profile.update_xaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
         fig_profile.update_yaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
         st.plotly_chart(fig_profile)
@@ -584,7 +594,9 @@ if X_pca_2d_global is not None and (run_da or run_knn):
         cm_da = confusion_matrix(y_test_enc, y_pred_da)
         fig_cm_da = px.imshow(cm_da, text_auto=True, x=unique_y, y=unique_y,
                               color_continuous_scale='Blues', title=f"{da_type} Confusion Matrix{title_suffix}")
-        fig_cm_da.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'))
+        fig_cm_da.update_traces(colorbar=dict(title_font=dict(color='black'), tickfont=dict(color='black')))
+        fig_cm_da.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'),
+                                title_font_color='black')
         fig_cm_da.update_xaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
         fig_cm_da.update_yaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
         st.plotly_chart(fig_cm_da, use_container_width=True)
@@ -612,7 +624,8 @@ if X_pca_2d_global is not None and (run_da or run_knn):
         rmse_cv = np.sqrt(-cv_scores)
         fig_rmsecv = px.line(x=range(1, 6), y=rmse_cv, markers=True, title=f"{da_type} RMSECV")
         fig_rmsecv.update_layout(xaxis_title="Fold", yaxis_title="RMSE",
-                                 paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'))
+                                 paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'),
+                                 title_font_color='black')
         fig_rmsecv.update_xaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
         fig_rmsecv.update_yaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
         st.plotly_chart(fig_rmsecv)
@@ -640,7 +653,9 @@ if X_pca_2d_global is not None and (run_da or run_knn):
             knn_title += f" (k={best_k})"
         fig_cm_knn = px.imshow(cm_knn, text_auto=True, x=unique_y, y=unique_y,
                                color_continuous_scale='Blues', title=knn_title)
-        fig_cm_knn.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'))
+        fig_cm_knn.update_traces(colorbar=dict(title_font=dict(color='black'), tickfont=dict(color='black')))
+        fig_cm_knn.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'),
+                                 title_font_color='black')
         fig_cm_knn.update_xaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
         fig_cm_knn.update_yaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
         st.plotly_chart(fig_cm_knn, use_container_width=True)
@@ -675,7 +690,8 @@ if X_pca_2d_global is not None and (run_da or run_knn):
             rmse_cv.append(np.mean(np.sqrt(-cv_scores)))
         fig_rmsecv = px.line(x=k_range, y=rmse_cv, markers=True, title="KNN RMSECV vs K")
         fig_rmsecv.update_layout(xaxis_title="K", yaxis_title="RMSECV",
-                                 paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'))
+                                 paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'),
+                                 title_font_color='black')
         fig_rmsecv.update_xaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
         fig_rmsecv.update_yaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
         st.plotly_chart(fig_rmsecv)
