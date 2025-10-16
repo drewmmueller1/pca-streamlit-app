@@ -305,13 +305,13 @@ if show_3d and n_total_pcs >= 3:
     try:
         img_bytes = fig_3d_white.to_image(format="png", width=800, height=600)
         st.download_button(
-            label="Download 3D Plot (White BG, Black Text)",
+            label="Download 3D Plot as PNG (White BG, Black Text)",
             data=img_bytes,
             file_name="3d_pca_plot.png",
             mime="image/png"
         )
     except Exception as e:
-        st.warning(f"Image export failed: {str(e)}. Install 'kaleido' to enable PNG download.")
+        st.info("PNG download not available. To enable, install kaleido: `pip install kaleido`. Alternatively, use browser tools to screenshot the plot.")
 elif show_3d:
     st.warning("Need at least 3 features for 3D plot.")
 
