@@ -293,6 +293,7 @@ if show_3d and n_total_pcs >= 3:
                          paper_bgcolor='white',
                          plot_bgcolor='white',
                          font=dict(color='black'),
+                         legend=dict(font=dict(color='black')),
                          scene=dict(
                              xaxis_title=f"PC1 ({explained_3d[0]:.1%})",
                              yaxis_title=f"PC2 ({explained_3d[1]:.1%})",
@@ -330,7 +331,8 @@ if show_scree:
                             yaxis_title="% Variance Explained",
                             paper_bgcolor='white',
                             plot_bgcolor='white',
-                            font=dict(color='black'))
+                            font=dict(color='black'),
+                            legend=dict(font=dict(color='black')))
     fig_scree.update_xaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
     fig_scree.update_yaxes(tickfont=dict(color='black'), title_font=dict(color='black'), secondary_y=False)
     fig_scree.update_yaxes(range=[0, var_ratio.max() * 1.1], secondary_y=False)
@@ -381,7 +383,8 @@ if show_loadings:
                                            yaxis_title="Loading Magnitude",
                                            paper_bgcolor='white',
                                            plot_bgcolor='white',
-                                           font=dict(color='black'))
+                                           font=dict(color='black'),
+                                           legend=dict(font=dict(color='black')))
                 fig_loadings.update_xaxes(tickangle=45, tickfont=dict(color='black'), title_font=dict(color='black'))
                 fig_loadings.update_yaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
             else: # Connected Scatterplot (Continuous, e.g., Spectroscopy)
@@ -399,7 +402,8 @@ if show_loadings:
                                        labels={'Variable': 'Factors/Variables', 'Loading': 'Loading Magnitude'})
                 fig_loadings.update_traces(line=dict(width=2, dash='solid')) # Continuous solid lines
                 fig_loadings.update_xaxes(tickangle=45, tickfont=dict(color='black'), title_font=dict(color='black'))
-                fig_loadings.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'))
+                fig_loadings.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'),
+                                           legend=dict(font=dict(color='black')))
                 if len(original_vars) > 50:
                     st.warning("Many variables (>50)—zoom/pan the plot for details in spectroscopy data.")
             st.plotly_chart(fig_loadings, use_container_width=True)
@@ -457,7 +461,8 @@ if run_kmeans and X_pca_2d_global is not None:
     fig_cluster = px.scatter(df_cluster, x='PC1', y='PC2', color='cluster',
                              title=f"K-Means Clustering (k={n_clusters}) on PC1 vs PC2",
                              color_discrete_sequence=px.colors.qualitative.Set1)
-    fig_cluster.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'))
+    fig_cluster.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'),
+                              legend=dict(font=dict(color='black')))
     fig_cluster.update_xaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
     fig_cluster.update_yaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
     st.plotly_chart(fig_cluster, use_container_width=True)
@@ -495,7 +500,8 @@ if run_kmeans and X_pca_2d_global is not None:
         df_centroids = pd.DataFrame(centroids, columns=['PC1', 'PC2'])
         df_centroids['cluster'] = range(n_clusters)
         fig_profile = px.bar(df_centroids.melt(id_vars='cluster'), x='cluster', y='value', color='variable', barmode='group', title="Cluster Centroids on PC1 and PC2")
-        fig_profile.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'))
+        fig_profile.update_layout(paper_bgcolor='white', plot_bgcolor='white', font=dict(color='black'),
+                                  legend=dict(font=dict(color='black')))
         fig_profile.update_xaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
         fig_profile.update_yaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
         st.plotly_chart(fig_profile)
