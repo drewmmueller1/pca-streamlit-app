@@ -331,7 +331,7 @@ if show_scree:
                             paper_bgcolor='white',
                             plot_bgcolor='white',
                             font=dict(color='black'))
-    fig_scree.update_xaxes(tickfont=dict(color='black'), title_font=dict(color='black'), secondary_y=False)
+    fig_scree.update_xaxes(tickfont=dict(color='black'), title_font=dict(color='black'))
     fig_scree.update_yaxes(tickfont=dict(color='black'), title_font=dict(color='black'), secondary_y=False)
     fig_scree.update_yaxes(range=[0, var_ratio.max() * 1.1], secondary_y=False)
     st.plotly_chart(fig_scree, use_container_width=True)
