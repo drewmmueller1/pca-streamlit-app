@@ -287,31 +287,6 @@ if show_3d and n_total_pcs >= 3:
                              zaxis_title=f"PC3 ({explained_3d[2]:.1%})"
                          ))
     st.plotly_chart(fig_3d, use_container_width=True)
-    
-    # Download option as PNG image with white background and black text
-    # Note: Requires 'kaleido' package: pip install kaleido
-    fig_3d_white = fig_3d.copy()
-    fig_3d_white.update_layout(
-        template='plotly_white',
-        font=dict(color='black'),
-        scene=dict(
-            xaxis=dict(title_font_color='black', tickfont_color='black'),
-            yaxis=dict(title_font_color='black', tickfont_color='black'),
-            zaxis=dict(title_font_color='black', tickfont_color='black'),
-            bgcolor='white'
-        ),
-        paper_bgcolor='white'
-    )
-    try:
-        img_bytes = fig_3d_white.to_image(format="png", width=800, height=600)
-        st.download_button(
-            label="Download 3D Plot as PNG (White BG, Black Text)",
-            data=img_bytes,
-            file_name="3d_pca_plot.png",
-            mime="image/png"
-        )
-    except Exception as e:
-        st.info("PNG download not available. To enable, install kaleido: `pip install kaleido`. Alternatively, use browser tools to screenshot the plot.")
 elif show_3d:
     st.warning("Need at least 3 features for 3D plot.")
 
