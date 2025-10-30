@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler, LabelEncoder, MinMaxScaler
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.cluster import KMeans
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis as QDA
@@ -30,8 +30,8 @@ Upload a CSV file with:
 """)
 
 # Sidebar mode selection
-st.sidebar.header("Mode Selection")
-use_precomputed = st.sidebar.checkbox("Use pre-computed PC scores", value=False)
+with st.sidebar.expander("Mode Selection", expanded=False):
+    use_precomputed = st.checkbox("Use pre-computed PC scores", value=False)
 
 # File uploaders
 uploaded_file = st.file_uploader("Upload feature CSV", type="csv")
@@ -75,18 +75,18 @@ else:
     if 'label' not in df.columns:
         st.warning("No 'label' column found. Will generate from column names if transposing.")
     # Data prep options
-    st.sidebar.header("Data Prep Options")
-    transpose_data = st.sidebar.checkbox("Transpose Dataset (if samples are in columns)", value=False, help="Swaps rows and columns. Use if your data has samples as columns and features as rows (e.g., wavenumbers in first column).")
-    # Preprocessing options
-    preprocess_option = st.sidebar.radio(
-        "Select preprocessing:",
-        ['SNV', 'Z-score'], index=1
-    )
-    # Normalization options
-    normalize_option = st.sidebar.radio(
-        "Select normalization (applied after preprocessing, before PCA):",
-        ['None', 'Min-Max (per feature)', 'Sum to 1 (per sample)', 'L2 Norm (sqrt(sum squares) per sample)'], index=0
-    )
+    with st.sidebar.expander("Data Prep Options", expanded=False):
+        transpose_data = st.checkbox("Transpose Dataset (if samples are in columns)", value=False, help="Swaps rows and columns. Use if your data has samples as columns and features as rows (e.g., wavenumbers in first column).")
+        # Preprocessing options
+        preprocess_option = st.radio(
+            "Select preprocessing:",
+            ['SNV', 'Z-score'], index=1
+        )
+        # Normalization options
+        normalize_option = st.radio(
+            "Select normalization (applied after preprocessing, before PCA):",
+            ['None', 'Min-Max (per sample)', 'Sum to 1 (per sample)', 'L2 Norm (sqrt(sum squares) per sample)'], index=0
+        )
     if transpose_data:
         # Assume first col is features (e.g., wavenumber), rest are samples
         if df.shape[1] < 2:
@@ -132,10 +132,16 @@ else:
     st.success(f"Preprocessing applied: {preprocess_option}")
     # Apply normalization
     if normalize_option != 'None':
-        if normalize_option == 'Min-Max (per feature)':
-            normalizer = MinMaxScaler()
-            X_normalized = pd.DataFrame(normalizer.fit_transform(X), columns=X.columns, index=X.index)
-            st.success("Min-Max normalization applied (per feature).")
+        if normalize_option == 'Min-Max (per sample)':
+            X_normalized = X.copy()
+            for i in range(X_normalized.shape[0]):
+                row_min = np.min(X_normalized.iloc[i])
+                row_max = np.max(X_normalized.iloc[i])
+                if row_max > row_min:
+                    X_normalized.iloc[i] = (X_normalized.iloc[i] - row_min) / (row_max - row_min)
+                else:
+                    st.warning(f"Row {i+1} has constant values—Min-Max skipped for it.")
+            st.success("Min-Max normalization applied (per sample).")
         elif normalize_option == 'Sum to 1 (per sample)':
             X_normalized = X.copy()
             for i in range(X_normalized.shape[0]):
@@ -193,54 +199,54 @@ else:
     y_global = None
 
 # Sidebar options (toggles + save slider + loadings type)
-st.sidebar.header("Plot Options")
-show_2d = st.sidebar.checkbox("Show 2D PCA Plot (Static)", value=True)
-legend_separate = st.sidebar.checkbox("Show legend in separate figure for PCA plots", value=False)
-show_3d = st.sidebar.checkbox("Show 3D PCA Plot (Interactive)", value=True)
-show_scree = st.sidebar.checkbox("Show Scree Plot", value=True)
-if show_scree:
-    # Find min n for >=99% and >=99.9% cum var
-    cum_var = np.cumsum(var_ratios)
-    n_99 = np.argmax(cum_var >= 0.99) + 1 if np.any(cum_var >= 0.99) else n_total_pcs
-    n_999 = np.argmax(cum_var >= 0.999) + 1 if np.any(cum_var >= 0.999) else n_total_pcs
-    n_scree = st.sidebar.slider("Number of PCs to Show in Scree Plot", 1, n_999, n_99)
-else:
-    n_scree = n_total_pcs
-show_loadings = st.sidebar.checkbox("Show Loadings Plot (Top 3 PCs)", value=True)
-if show_loadings and not is_precomputed:
-    loadings_type = st.sidebar.selectbox("Loadings Plot Type", ["Bar Graph (Discrete, e.g., GCMS)", "Connected Scatterplot (Continuous, e.g., Spectroscopy)"], index=0)
-else:
-    loadings_type = "Bar Graph (Discrete, e.g., GCMS)" # Default if not shown
+with st.sidebar.expander("Plot Options", expanded=False):
+    show_2d = st.checkbox("Show 2D PCA Plot (Static)", value=True)
+    legend_separate = st.checkbox("Show legend in separate figure for PCA plots", value=False)
+    show_3d = st.checkbox("Show 3D PCA Plot (Interactive)", value=True)
+    show_scree = st.checkbox("Show Scree Plot", value=True)
+    if show_scree:
+        # Find min n for >=99% and >=99.9% cum var
+        cum_var = np.cumsum(var_ratios)
+        n_99 = np.argmax(cum_var >= 0.99) + 1 if np.any(cum_var >= 0.99) else n_total_pcs
+        n_999 = np.argmax(cum_var >= 0.999) + 1 if np.any(cum_var >= 0.999) else n_total_pcs
+        n_scree = st.slider("Number of PCs to Show in Scree Plot", 1, n_999, n_99)
+    else:
+        n_scree = n_total_pcs
+    show_loadings = st.checkbox("Show Loadings Plot (Top 3 PCs)", value=True)
+    if show_loadings and not is_precomputed:
+        loadings_type = st.selectbox("Loadings Plot Type", ["Bar Graph (Discrete, e.g., GCMS)", "Connected Scatterplot (Continuous, e.g., Spectroscopy)"], index=0)
+    else:
+        loadings_type = "Bar Graph (Discrete, e.g., GCMS)" # Default if not shown
 
-st.sidebar.header("Download Options")
-num_save_pcs = st.sidebar.slider("Number of PCs to Save", 1, min(10, n_total_pcs), 3)
+with st.sidebar.expander("Download Options", expanded=False):
+    num_save_pcs = st.slider("Number of PCs to Save", 1, min(10, n_total_pcs), 3)
 
 # Classification options in sidebar
-st.sidebar.header("Classification Options")
-run_da = st.sidebar.checkbox("Run Discriminant Analysis")
-if run_da:
-    da_type = st.sidebar.selectbox("Discriminant Analysis Type", ["LDA", "QDA", "GaussianNB"], index=0)
-    optimize_da = st.sidebar.checkbox("Optimize Discriminant Analysis parameters")
-run_knn = st.sidebar.checkbox("Run K-Nearest Neighbors (KNN)")
-optimize_knn = st.sidebar.checkbox("Optimize KNN parameters") if run_knn else False
-if run_knn and not optimize_knn:
-    k = st.sidebar.slider("K value", 1, 20, 5)
-else:
-    k = 5 # Default
-run_kmeans = st.sidebar.checkbox("Run K-Means Clustering")
-if run_kmeans:
-    auto_optimize_k = st.sidebar.checkbox("Auto-optimize K", value=False)
-    if not auto_optimize_k:
-        n_clusters = st.sidebar.slider("Number of clusters", 2, 10, 3)
-    show_elbow = st.sidebar.checkbox("Show Elbow Plot", value=True)
-    show_silhouette = st.sidebar.checkbox("Show Silhouette Plot", value=True)
-    show_cluster_profile = st.sidebar.checkbox("Show Cluster Profile Plots", value=True)
-else:
-    auto_optimize_k = False
-    show_elbow = False
-    show_silhouette = False
-    show_cluster_profile = False
-    n_clusters = 3
+with st.sidebar.expander("Classification Options", expanded=False):
+    run_da = st.checkbox("Run Discriminant Analysis")
+    if run_da:
+        da_type = st.selectbox("Discriminant Analysis Type", ["LDA", "QDA", "GaussianNB"], index=0)
+        optimize_da = st.checkbox("Optimize Discriminant Analysis parameters")
+    run_knn = st.checkbox("Run K-Nearest Neighbors (KNN)")
+    optimize_knn = st.checkbox("Optimize KNN parameters") if run_knn else False
+    if run_knn and not optimize_knn:
+        k = st.slider("K value", 1, 20, 5)
+    else:
+        k = 5 # Default
+    run_kmeans = st.checkbox("Run K-Means Clustering")
+    if run_kmeans:
+        auto_optimize_k = st.checkbox("Auto-optimize K", value=False)
+        if not auto_optimize_k:
+            n_clusters = st.slider("Number of clusters", 2, 10, 3)
+        show_elbow = st.checkbox("Show Elbow Plot", value=True)
+        show_silhouette = st.checkbox("Show Silhouette Plot", value=True)
+        show_cluster_profile = st.checkbox("Show Cluster Profile Plots", value=True)
+    else:
+        auto_optimize_k = False
+        show_elbow = False
+        show_silhouette = False
+        show_cluster_profile = False
+        n_clusters = 3
 
 # Label Configuration
 st.subheader("Label Configuration")
@@ -329,6 +335,7 @@ if show_3d and n_total_pcs >= 3:
         explained_3d = pca_3d.explained_variance_ratio_
     df_plot = pd.DataFrame(X_pca_3d, columns=['PC1', 'PC2', 'PC3'])
     df_plot['label'] = y_plot
+    unique_labels_3d = sorted(df_plot['label'].unique())
     fig_3d = px.scatter_3d(df_plot, x='PC1', y='PC2', z='PC3', color='label',
                            color_discrete_sequence=px.colors.qualitative.Set1)
     fig_3d.update_traces(marker=dict(size=5))
@@ -338,7 +345,8 @@ if show_3d and n_total_pcs >= 3:
         st.plotly_chart(fig_3d, use_container_width=True)
         # Simple separate legend as text
         st.subheader("Legend")
-        legend_text = "\n".join([f"{label}: {px.colors.qualitative.Set1[i % len(px.colors.qualitative.Set1)]}" for i, label in enumerate(sorted(unique_labels))])
+        color_list = px.colors.qualitative.Set1
+        legend_text = "\n".join([f"{label}: {color_list[i % len(color_list)]}" for i, label in enumerate(unique_labels_3d)])
         st.text(legend_text)
     else:
         fig_3d.update_layout(title="Interactive 3D PCA Plot (Fixed to PC1-PC3)",
