@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler, LabelEncoder, MinMaxScaler
 from sklearn.cluster import KMeans
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis as QDA
@@ -82,6 +82,11 @@ else:
         "Select preprocessing:",
         ['SNV', 'Z-score'], index=1
     )
+    # Normalization options
+    normalize_option = st.sidebar.radio(
+        "Select normalization (applied after preprocessing, before PCA):",
+        ['None', 'Min-Max (per feature)', 'Sum to 1 (per sample)', 'L2 Norm (sqrt(sum squares) per sample)'], index=0
+    )
     if transpose_data:
         # Assume first col is features (e.g., wavenumber), rest are samples
         if df.shape[1] < 2:
@@ -125,6 +130,31 @@ else:
         X_processed = pd.DataFrame(scaler.fit_transform(X_processed), columns=X.columns, index=X.index)
     X = X_processed
     st.success(f"Preprocessing applied: {preprocess_option}")
+    # Apply normalization
+    if normalize_option != 'None':
+        if normalize_option == 'Min-Max (per feature)':
+            normalizer = MinMaxScaler()
+            X_normalized = pd.DataFrame(normalizer.fit_transform(X), columns=X.columns, index=X.index)
+            st.success("Min-Max normalization applied (per feature).")
+        elif normalize_option == 'Sum to 1 (per sample)':
+            X_normalized = X.copy()
+            for i in range(X_normalized.shape[0]):
+                row_sum = np.sum(X_normalized.iloc[i])
+                if row_sum > 0:
+                    X_normalized.iloc[i] = X_normalized.iloc[i] / row_sum
+                else:
+                    st.warning(f"Row {i+1} has zero sum—normalization skipped for it.")
+            st.success("Sum to 1 normalization applied (per sample).")
+        elif normalize_option == 'L2 Norm (sqrt(sum squares) per sample)':
+            X_normalized = X.copy()
+            for i in range(X_normalized.shape[0]):
+                row_l2 = np.sqrt(np.sum(X_normalized.iloc[i]**2))
+                if row_l2 > 0:
+                    X_normalized.iloc[i] = X_normalized.iloc[i] / row_l2
+                else:
+                    st.warning(f"Row {i+1} has zero L2 norm—normalization skipped for it.")
+            st.success("L2 Norm normalization applied (per sample).")
+        X = X_normalized
     # Conditional scaling only if not Z-score (to avoid double scaling)
     if preprocess_option != 'Z-score':
         scaler = StandardScaler()
@@ -165,6 +195,7 @@ else:
 # Sidebar options (toggles + save slider + loadings type)
 st.sidebar.header("Plot Options")
 show_2d = st.sidebar.checkbox("Show 2D PCA Plot (Static)", value=True)
+legend_separate = st.sidebar.checkbox("Show legend in separate figure for PCA plots", value=False)
 show_3d = st.sidebar.checkbox("Show 3D PCA Plot (Interactive)", value=True)
 show_scree = st.sidebar.checkbox("Show Scree Plot", value=True)
 if show_scree:
@@ -247,21 +278,42 @@ if show_2d and n_total_pcs >= 2:
     df_plot_2d = pd.DataFrame(X_pca_2d, columns=['PC1', 'PC2'])
     df_plot_2d['label'] = y_plot
     # Matplotlib for static plot
-    fig, ax = plt.subplots(figsize=(8, 6))
     unique_labels = df_plot_2d['label'].unique()
     colors = plt.cm.tab10(np.linspace(0, 1, len(unique_labels)))
     color_map = {label: color for label, color in zip(unique_labels, colors)}
-    for label in unique_labels:
-        mask = df_plot_2d['label'] == label
-        ax.scatter(df_plot_2d[mask]['PC1'], df_plot_2d[mask]['PC2'],
-                   c=[color_map[label]], label=label, s=50)
-    ax.set_xlabel(f"PC1 ({explained_2d[0]:.1%})")
-    ax.set_ylabel(f"PC2 ({explained_2d[1]:.1%})")
-    ax.set_title("Static 2D PCA Plot")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    st.pyplot(fig)
-    plt.close(fig)
+    if legend_separate:
+        # Main plot without legend
+        fig_main, ax_main = plt.subplots(figsize=(8, 6))
+        for label in unique_labels:
+            mask = df_plot_2d['label'] == label
+            ax_main.scatter(df_plot_2d[mask]['PC1'], df_plot_2d[mask]['PC2'],
+                            c=[color_map[label]], label=label, s=50)
+        ax_main.set_xlabel(f"PC1 ({explained_2d[0]:.1%})")
+        ax_main.set_ylabel(f"PC2 ({explained_2d[1]:.1%})")
+        ax_main.set_title("Static 2D PCA Plot")
+        ax_main.grid(True, alpha=0.3)
+        st.pyplot(fig_main)
+        plt.close(fig_main)
+        # Separate legend figure
+        fig_legend, ax_legend = plt.subplots(figsize=(2, len(unique_labels)*0.5))
+        ax_legend.axis('off')
+        handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=color_map[label], markersize=8, label=label) for label in unique_labels]
+        ax_legend.legend(handles=handles, loc='center')
+        st.pyplot(fig_legend)
+        plt.close(fig_legend)
+    else:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        for label in unique_labels:
+            mask = df_plot_2d['label'] == label
+            ax.scatter(df_plot_2d[mask]['PC1'], df_plot_2d[mask]['PC2'],
+                       c=[color_map[label]], label=label, s=50)
+        ax.set_xlabel(f"PC1 ({explained_2d[0]:.1%})")
+        ax.set_ylabel(f"PC2 ({explained_2d[1]:.1%})")
+        ax.set_title("Static 2D PCA Plot")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        st.pyplot(fig)
+        plt.close(fig)
 elif show_2d:
     st.warning("Need at least 2 features for 2D plot.")
 
@@ -280,13 +332,22 @@ if show_3d and n_total_pcs >= 3:
     fig_3d = px.scatter_3d(df_plot, x='PC1', y='PC2', z='PC3', color='label',
                            color_discrete_sequence=px.colors.qualitative.Set1)
     fig_3d.update_traces(marker=dict(size=5))
-    fig_3d.update_layout(title="Interactive 3D PCA Plot (Fixed to PC1-PC3)",
-                         scene=dict(
-                             xaxis_title=f"PC1 ({explained_3d[0]:.1%})",
-                             yaxis_title=f"PC2 ({explained_3d[1]:.1%})",
-                             zaxis_title=f"PC3 ({explained_3d[2]:.1%})"
-                         ))
-    st.plotly_chart(fig_3d, use_container_width=True)
+    # For separate legend in 3D, disable legend in main and add a separate colorbar-like, but for discrete, use a simple text or skip for now
+    if legend_separate:
+        fig_3d.update_layout(showlegend=False)
+        st.plotly_chart(fig_3d, use_container_width=True)
+        # Simple separate legend as text
+        st.subheader("Legend")
+        legend_text = "\n".join([f"{label}: {px.colors.qualitative.Set1[i % len(px.colors.qualitative.Set1)]}" for i, label in enumerate(sorted(unique_labels))])
+        st.text(legend_text)
+    else:
+        fig_3d.update_layout(title="Interactive 3D PCA Plot (Fixed to PC1-PC3)",
+                             scene=dict(
+                                 xaxis_title=f"PC1 ({explained_3d[0]:.1%})",
+                                 yaxis_title=f"PC2 ({explained_3d[1]:.1%})",
+                                 zaxis_title=f"PC3 ({explained_3d[2]:.1%})"
+                             ))
+        st.plotly_chart(fig_3d, use_container_width=True)
 elif show_3d:
     st.warning("Need at least 3 features for 3D plot.")
 
