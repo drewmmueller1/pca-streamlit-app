@@ -116,6 +116,7 @@ else:
     # Apply preprocessing
     X_processed = X.copy()
     if preprocess_option == 'SNV':
+        # SNV: per sample (row) normalization
         for i in range(X_processed.shape[0]):
             row_mean = np.mean(X_processed.iloc[i])
             row_std = np.std(X_processed.iloc[i])
@@ -124,6 +125,7 @@ else:
             else:
                 st.warning(f"Row {i+1} has zero variance—SNV skipped for it.")
     elif preprocess_option == 'Z-score':
+        # Z-score: feature-wise (StandardScaler)
         scaler = StandardScaler()
         X_processed = pd.DataFrame(scaler.fit_transform(X_processed), columns=X.columns, index=X.index)
     X = X_processed
@@ -159,7 +161,7 @@ else:
                     st.warning(f"Row {i+1} has zero L2 norm—normalization skipped for it.")
             st.success("L2 Norm normalization applied (per sample).")
         X = X_normalized
-    # Conditional scaling only if not Z-score
+    # Conditional scaling only if not Z-score (to avoid double scaling)
     if preprocess_option != 'Z-score':
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
@@ -177,7 +179,7 @@ y = y[mask_include]
 
 # Compute PCA on filtered data
 if is_precomputed:
-    X_pca = X_scaled
+    X_pca = X_scaled # Precomputed PCs are the data
     n_total_pcs = X_pca.shape[1]
     var_ratios = np.full(n_total_pcs, 1.0 / n_total_pcs) if n_total_pcs > 0 else np.array([])
     pca_full = None
@@ -187,16 +189,23 @@ else:
     n_total_pcs = X_pca.shape[1]
     var_ratios = pca_full.explained_variance_ratio_
 
-# Store global variables
-y_global = y
+# Common code after data preparation
+# Store X_pca_2d for classification (always first 2 PCs for clustering/visualization)
+if n_total_pcs >= 2:
+    X_pca_2d_global = X_pca[:, :2]
+    y_global = y
+else:
+    X_pca_2d_global = None
+    y_global = None
 
-# Sidebar options
+# Sidebar options (toggles + save slider + loadings type)
 with st.sidebar.expander("Plot Options", expanded=False):
     show_2d = st.checkbox("Show 2D PCA Plot (Static)", value=True)
     legend_separate = st.checkbox("Show legend in separate figure for PCA plots", value=False)
     show_3d = st.checkbox("Show 3D PCA Plot (Interactive)", value=True)
     show_scree = st.checkbox("Show Scree Plot", value=True)
     if show_scree:
+        # Find min n for >=99% and >=99.9% cum var
         cum_var = np.cumsum(var_ratios)
         n_99 = np.argmax(cum_var >= 0.99) + 1 if np.any(cum_var >= 0.99) else n_total_pcs
         n_999 = np.argmax(cum_var >= 0.999) + 1 if np.any(cum_var >= 0.999) else n_total_pcs
@@ -207,12 +216,12 @@ with st.sidebar.expander("Plot Options", expanded=False):
     if show_loadings and not is_precomputed:
         loadings_type = st.selectbox("Loadings Plot Type", ["Bar Graph (Discrete, e.g., GCMS)", "Connected Scatterplot (Continuous, e.g., Spectroscopy)"], index=0)
     else:
-        loadings_type = "Bar Graph (Discrete, e.g., GCMS)"
+        loadings_type = "Bar Graph (Discrete, e.g., GCMS)" # Default if not shown
 
 with st.sidebar.expander("Download Options", expanded=False):
     num_save_pcs = st.slider("Number of PCs to Save", 1, min(10, n_total_pcs), 3)
 
-# === NEW: Classification Options + Input PCs ===
+# === Classification Options ===
 with st.sidebar.expander("Classification Options", expanded=False):
     run_da = st.checkbox("Run Discriminant Analysis")
     if run_da:
@@ -223,7 +232,7 @@ with st.sidebar.expander("Classification Options", expanded=False):
     if run_knn and not optimize_knn:
         k = st.slider("K value", 1, 20, 5)
     else:
-        k = 5
+        k = 5 # Default
     run_kmeans = st.checkbox("Run K-Means Clustering")
     if run_kmeans:
         auto_optimize_k = st.checkbox("Auto-optimize K", value=False)
@@ -239,7 +248,7 @@ with st.sidebar.expander("Classification Options", expanded=False):
         show_cluster_profile = False
         n_clusters = 3
 
-# New expander for number of PCs in classification
+# === NEW: Classification Input Options (Number of PCs) ===
 with st.sidebar.expander("Classification Input Options", expanded=True):
     max_pcs_for_class = min(10, n_total_pcs)
     n_pcs_for_classification = st.slider(
@@ -247,15 +256,17 @@ with st.sidebar.expander("Classification Input Options", expanded=True):
         min_value=1,
         max_value=max_pcs_for_class,
         value=2,
-        help="Number of principal components fed into LDA / QDA / KNN. "
-             "Decision boundary plots are only available when exactly 2 PCs are selected."
+        help="How many principal components to feed into LDA / QDA / KNN. "
+             "Decision boundary plots are only shown when exactly 2 PCs are selected."
     )
 
 # Label Configuration
 st.subheader("Label Configuration")
 label_mode = st.radio("Label Mode", ["Default Labels", "Combined Groups"], index=0)
 y_plot = y.copy()
-if label_mode == "Combined Groups":
+if label_mode == "Default Labels":
+    st.info("Using default simplified labels for plots and models.")
+else:
     if n_total_pcs >= 2:
         unique_classes = sorted(y_global.unique())
         selected_for_a = st.multiselect("Select labels for Group A", unique_classes, default=unique_classes[:1])
@@ -266,10 +277,11 @@ if label_mode == "Combined Groups":
         if apply_to_plots and selected_for_a and selected_for_b:
             y_plot = y_plot.replace({label: rename_a for label in selected_for_a})
             y_plot = y_plot.replace({label: rename_b for label in selected_for_b})
+    else:
+        selected_for_a, selected_for_b, rename_a, rename_b = [], [], "Group A", "Group B"
+        apply_to_plots = False
 
-# ====================== PLOTS (2D, 3D, Scree, Loadings) ======================
-# (The plotting code remains mostly the same – only minor updates for consistency)
-
+# 1. 2D PCA Plot (Static, first 2 PCs)
 if show_2d and n_total_pcs >= 2:
     st.subheader("2D PCA Plot (PC1 vs PC2)")
     if is_precomputed:
@@ -279,9 +291,235 @@ if show_2d and n_total_pcs >= 2:
         pca_2d = PCA(n_components=2)
         X_pca_2d = pca_2d.fit_transform(X_scaled)
         explained_2d = pca_2d.explained_variance_ratio_
-    # ... (rest of 2D plot code remains unchanged)
+    df_plot_2d = pd.DataFrame(X_pca_2d, columns=['PC1', 'PC2'])
+    df_plot_2d['label'] = y_plot
+    # Matplotlib for static plot
+    unique_labels = df_plot_2d['label'].unique()
+    colors = plt.cm.tab10(np.linspace(0, 1, len(unique_labels)))
+    color_map = {label: color for label, color in zip(unique_labels, colors)}
+    if legend_separate:
+        # Main plot without legend
+        fig_main, ax_main = plt.subplots(figsize=(8, 6))
+        for label in unique_labels:
+            mask = df_plot_2d['label'] == label
+            ax_main.scatter(df_plot_2d[mask]['PC1'], df_plot_2d[mask]['PC2'],
+                            c=[color_map[label]], label=label, s=50)
+        ax_main.set_xlabel(f"PC1 ({explained_2d[0]:.1%})")
+        ax_main.set_ylabel(f"PC2 ({explained_2d[1]:.1%})")
+        ax_main.set_title("Static 2D PCA Plot")
+        ax_main.grid(True, alpha=0.3)
+        st.pyplot(fig_main)
+        plt.close(fig_main)
+        # Separate legend figure
+        fig_legend, ax_legend = plt.subplots(figsize=(2, len(unique_labels)*0.5))
+        ax_legend.axis('off')
+        handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=color_map[label], markersize=8, label=label) for label in unique_labels]
+        ax_legend.legend(handles=handles, loc='center')
+        st.pyplot(fig_legend)
+        plt.close(fig_legend)
+    else:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        for label in unique_labels:
+            mask = df_plot_2d['label'] == label
+            ax.scatter(df_plot_2d[mask]['PC1'], df_plot_2d[mask]['PC2'],
+                       c=[color_map[label]], label=label, s=50)
+        ax.set_xlabel(f"PC1 ({explained_2d[0]:.1%})")
+        ax.set_ylabel(f"PC2 ({explained_2d[1]:.1%})")
+        ax.set_title("Static 2D PCA Plot")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        st.pyplot(fig)
+        plt.close(fig)
+elif show_2d:
+    st.warning("Need at least 2 features for 2D plot.")
 
-# 3D Plot, Scree Plot, Loadings Plot – keep as in your original code
+# 2. 3D PCA Plot (Interactive, FIXED to first 3 PCs only—no options to change)
+if show_3d and n_total_pcs >= 3:
+    st.subheader("3D PCA Plot (Interactive: Rotate/Zoom with Mouse)")
+    if is_precomputed:
+        X_pca_3d = X_pca[:, :3]
+        explained_3d = var_ratios[:3]
+    else:
+        pca_3d = PCA(n_components=3)
+        X_pca_3d = pca_3d.fit_transform(X_scaled)
+        explained_3d = pca_3d.explained_variance_ratio_
+    df_plot = pd.DataFrame(X_pca_3d, columns=['PC1', 'PC2', 'PC3'])
+    df_plot['label'] = y_plot
+    unique_labels_3d = sorted(df_plot['label'].unique())
+    fig_3d = px.scatter_3d(df_plot, x='PC1', y='PC2', z='PC3', color='label',
+                           color_discrete_sequence=px.colors.qualitative.Set1)
+    fig_3d.update_traces(marker=dict(size=5))
+    if legend_separate:
+        fig_3d.update_layout(showlegend=False)
+        st.plotly_chart(fig_3d, use_container_width=True)
+        # Simple separate legend as text
+        st.subheader("Legend")
+        color_list = px.colors.qualitative.Set1
+        legend_text = "\n".join([f"{label}: {color_list[i % len(color_list)]}" for i, label in enumerate(unique_labels_3d)])
+        st.text(legend_text)
+    else:
+        fig_3d.update_layout(title="Interactive 3D PCA Plot (Fixed to PC1-PC3)",
+                             scene=dict(
+                                 xaxis_title=f"PC1 ({explained_3d[0]:.1%})",
+                                 yaxis_title=f"PC2 ({explained_3d[1]:.1%})",
+                                 zaxis_title=f"PC3 ({explained_3d[2]:.1%})"
+                             ))
+        st.plotly_chart(fig_3d, use_container_width=True)
+elif show_3d:
+    st.warning("Need at least 3 features for 3D plot.")
+
+# 3. Scree Plot
+if show_scree:
+    st.subheader("Scree Plot: Variance Explained")
+    if is_precomputed:
+        st.warning("Using equal variance assumption for pre-computed PCs.")
+    var_ratio = var_ratios[:n_scree] * 100
+    fig_scree = make_subplots(specs=[[{"secondary_y": False}]])
+    fig_scree.add_trace(
+        go.Bar(x=[f'PC{i+1}' for i in range(n_scree)], y=var_ratio,
+               name='% Variance', marker_color='lightblue'),
+        secondary_y=False
+    )
+    for i, v in enumerate(var_ratio):
+        fig_scree.add_annotation(x=f'PC{i+1}', y=v, text=f'{v:.1f}%', showarrow=False,
+                                 yshift=10, font=dict(size=10))
+    fig_scree.update_layout(title=f"Scree Plot (Showing {n_scree} PCs)",
+                            xaxis_title="Principal Components",
+                            yaxis_title="% Variance Explained")
+    fig_scree.update_yaxes(range=[0, var_ratio.max() * 1.1], secondary_y=False)
+    st.plotly_chart(fig_scree, use_container_width=True)
+    st.info(f"Total variance explained by shown PCs: {np.sum(var_ratios[:n_scree]):.1%} (≥99% reached at PC{n_99})")
+
+# 4. Factor Loadings Plot
+if show_loadings:
+    if pca_full is None:
+        st.warning("Loadings not available for pre-computed PC mode.")
+    else:
+        st.subheader("Factor Loadings Plot (Top 3 PCs)")
+        max_pcs = min(3, n_total_pcs)
+        var_ratios_top = var_ratios[:max_pcs]
+        valid_indices = [i for i in range(max_pcs) if var_ratios_top[i] > 0]
+        num_valid = len(valid_indices)
+        if num_valid == 0:
+            st.warning("No PCs with >0% variance.")
+        else:
+            st.info(f"Showing loadings for {num_valid} valid PCs (out of top 3)")
+            loadings = pd.DataFrame(pca_full.components_[valid_indices],
+                                    columns=X.columns,
+                                    index=[f'PC{i+1}' for i in valid_indices])
+            loadings_abs = loadings.abs()
+            if loadings_type == "Bar Graph (Discrete, e.g., GCMS)":
+                fig_loadings = go.Figure()
+                colors = px.colors.qualitative.Set3[:num_valid]
+                max_loadings = loadings_abs.max(axis=0)
+                sorted_vars = max_loadings.sort_values(ascending=False).index
+                width = 0.25
+                for i, pc in enumerate(loadings.index):
+                    pc_data = loadings_abs.loc[pc].loc[sorted_vars]
+                    x_pos = np.arange(len(sorted_vars)) + (i - (num_valid - 1) / 2) * width
+                    fig_loadings.add_trace(go.Bar(y=pc_data.values, x=sorted_vars,
+                                                  name=pc, marker_color=colors[i], width=width,
+                                                  base=0, offsetgroup=i))
+                fig_loadings.update_layout(barmode='group',
+                                           height=400, showlegend=True,
+                                           title="Loadings: Grouped Bar Graph (Abs Values)",
+                                           xaxis_title="Variables",
+                                           yaxis_title="Loading Magnitude")
+                fig_loadings.update_xaxes(tickangle=45, tickfont=dict(size=9))
+            else: # Connected Scatterplot
+                loadings_melt = loadings_abs.reset_index().melt(id_vars='index', var_name='Variable', value_name='Loading')
+                loadings_melt['PC'] = loadings_melt['index']
+                original_vars = X.columns.tolist()
+                loadings_melt['Variable'] = pd.Categorical(loadings_melt['Variable'], categories=original_vars, ordered=True)
+                loadings_melt = loadings_melt.sort_values(['PC', 'Variable'])
+                fig_loadings = px.line(loadings_melt, x='Variable', y='Loading', color='PC',
+                                       markers=False,
+                                       title="Loadings: Connected Line Plot (Abs Values)",
+                                       labels={'Variable': 'Factors/Variables', 'Loading': 'Loading Magnitude'})
+                fig_loadings.update_traces(line=dict(width=2, dash='solid'))
+                fig_loadings.update_xaxes(tickangle=45, tickfont=dict(size=9))
+                if len(original_vars) > 50:
+                    st.warning("Many variables (>50)—zoom/pan the plot for details in spectroscopy data.")
+            st.plotly_chart(fig_loadings, use_container_width=True)
+            st.subheader("Loadings Table (Top 3 PCs)")
+            st.dataframe(loadings)
+
+# Download buttons
+st.subheader("Download PCA Results")
+col1, col2 = st.columns(2)
+with col1:
+    if is_precomputed:
+        X_pca_save = X_pca[:, :num_save_pcs]
+    else:
+        pca_save = PCA(n_components=num_save_pcs)
+        X_pca_save = pca_save.fit_transform(X_scaled)
+    df_scores = pd.DataFrame(X_pca_save, columns=[f'PC{i+1}' for i in range(num_save_pcs)])
+    df_scores['label'] = y
+    csv_scores = df_scores.to_csv(index=False)
+    st.download_button("Download PC Scores CSV", csv_scores, "pc_scores.csv", "text/csv")
+with col2:
+    if pca_full is not None:
+        loadings_save = pd.DataFrame(pca_full.components_[:num_save_pcs],
+                                     columns=X.columns,
+                                     index=[f'PC{i+1}' for i in range(num_save_pcs)])
+        csv_loadings = loadings_save.to_csv(index=True)
+        st.download_button("Download Loadings CSV", csv_loadings, "pca_loadings.csv", "text/csv")
+    else:
+        st.info("Loadings not available for pre-computed mode.")
+st.info(f"Downloads include top {num_save_pcs} PCs.")
+
+# Clustering section
+if run_kmeans and X_pca_2d_global is not None:
+    st.header("Clustering Results")
+    if auto_optimize_k:
+        inertias = []
+        k_range = range(1, 11)
+        for k_i in k_range:
+            kmeans_i = KMeans(n_clusters=k_i, random_state=42, n_init=10)
+            kmeans_i.fit(X_pca_2d_global)
+            inertias.append(kmeans_i.inertia_)
+        diffs = np.diff(inertias)
+        diffs2 = np.diff(diffs)
+        optimal_k = np.argmin(diffs2) + 2
+        n_clusters = optimal_k
+        st.info(f"Auto-optimized K: {n_clusters}")
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    cluster_labels = kmeans.fit_predict(X_pca_2d_global)
+    df_cluster = pd.DataFrame(X_pca_2d_global, columns=['PC1', 'PC2'])
+    df_cluster['cluster'] = cluster_labels
+    fig_cluster = px.scatter(df_cluster, x='PC1', y='PC2', color='cluster',
+                             title=f"K-Means Clustering (k={n_clusters}) on PC1 vs PC2",
+                             color_discrete_sequence=px.colors.qualitative.Set1)
+    st.plotly_chart(fig_cluster, use_container_width=True)
+    st.info(f"Clustering completed with {n_clusters} clusters.")
+    if show_elbow:
+        st.subheader("Elbow Plot")
+        inertias = []
+        k_range = range(1, 11)
+        for k_i in k_range:
+            kmeans_i = KMeans(n_clusters=k_i, random_state=42, n_init=10)
+            kmeans_i.fit(X_pca_2d_global)
+            inertias.append(kmeans_i.inertia_)
+        fig_elbow = px.line(x=k_range, y=inertias, markers=True, title="Elbow Plot for Optimal K")
+        fig_elbow.update_layout(xaxis_title="Number of clusters K", yaxis_title="Inertia")
+        st.plotly_chart(fig_elbow)
+    if show_silhouette:
+        st.subheader("Silhouette Plot")
+        silhouettes = []
+        for k_i in range(2, 11):
+            kmeans_i = KMeans(n_clusters=k_i, random_state=42, n_init=10)
+            cluster_labels_i = kmeans_i.fit_predict(X_pca_2d_global)
+            silhouettes.append(silhouette_score(X_pca_2d_global, cluster_labels_i))
+        fig_sil = px.line(x=range(2, 11), y=silhouettes, markers=True, title="Silhouette Score for Optimal K")
+        fig_sil.update_layout(xaxis_title="Number of clusters K", yaxis_title="Silhouette Score")
+        st.plotly_chart(fig_sil)
+    if show_cluster_profile:
+        st.subheader("Cluster Profile Plots")
+        centroids = kmeans.cluster_centers_
+        df_centroids = pd.DataFrame(centroids, columns=['PC1', 'PC2'])
+        df_centroids['cluster'] = range(n_clusters)
+        fig_profile = px.bar(df_centroids.melt(id_vars='cluster'), x='cluster', y='value', color='variable', barmode='group', title="Cluster Centroids on PC1 and PC2")
+        st.plotly_chart(fig_profile)
 
 # ====================== CLASSIFICATION RESULTS ======================
 st.header("Classification Results")
@@ -289,15 +527,15 @@ st.header("Classification Results")
 if n_total_pcs < n_pcs_for_classification:
     st.error(f"Not enough PCs available. You selected {n_pcs_for_classification} but only {n_total_pcs} exist.")
 else:
-    # Use selected number of PCs
+    # Use the selected number of PCs for classification
     X_class = X_pca[:, :n_pcs_for_classification]
-    
+
     if label_mode == "Default Labels":
         y_selected = y_global
         title_suffix = " (Multi-class)"
     else:
         if not selected_for_a or not selected_for_b:
-            st.warning("Select groups for Combined Groups mode.")
+            st.warning("Select groups to run combined classification.")
             st.stop()
         mask_group_a = y_global.isin(selected_for_a)
         mask_group_b = y_global.isin(selected_for_b)
@@ -306,13 +544,11 @@ else:
         y_selected = np.where(mask_group_a[mask_selected], 0, 1)
         title_suffix = ""
 
-    # Encode labels
     le = LabelEncoder()
     y_encoded = le.fit_transform(y_selected)
     unique_y = le.classes_
 
-    # Train/test split
-    split_data = st.checkbox("Split into train/test sets", value=False)
+    split_data = st.checkbox("Split into train/test sets")
     if split_data:
         test_size = st.slider("Test size", 0.1, 0.5, 0.2)
         X_train, X_test, y_train_enc, y_test_enc = train_test_split(
@@ -321,7 +557,6 @@ else:
     else:
         X_train, X_test, y_train_enc, y_test_enc = X_class, X_class, y_encoded, y_encoded
 
-    # ------------------- Discriminant Analysis -------------------
     if run_da:
         if da_type == "LDA":
             if optimize_da:
@@ -330,13 +565,12 @@ else:
                 da_grid.fit(X_train, y_train_enc)
                 best_da = da_grid.best_estimator_
                 best_params_da = da_grid.best_params_
-                st.write(f"**Optimized LDA Parameters:** {best_params_da} | **{n_pcs_for_classification} PCs**")
+                st.write(f"**Optimized LDA Parameters:** {best_params_da} | Using **{n_pcs_for_classification} PCs**")
             else:
                 best_da = LDA()
                 best_da.fit(X_train, y_train_enc)
                 best_params_da = {'solver': 'svd'}
-                st.write(f"**LDA Parameters:** {best_params_da} | **{n_pcs_for_classification} PCs**")
-
+                st.write(f"**LDA Parameters:** {best_params_da} | Using **{n_pcs_for_classification} PCs**")
         elif da_type == "QDA":
             if optimize_da:
                 param_grid_da = {'reg_param': [0.0, 0.1, 0.5, 1.0]}
@@ -344,13 +578,12 @@ else:
                 da_grid.fit(X_train, y_train_enc)
                 best_da = da_grid.best_estimator_
                 best_params_da = da_grid.best_params_
-                st.write(f"**Optimized QDA Parameters:** {best_params_da} | **{n_pcs_for_classification} PCs**")
+                st.write(f"**Optimized QDA Parameters:** {best_params_da} | Using **{n_pcs_for_classification} PCs**")
             else:
                 best_da = QDA()
                 best_da.fit(X_train, y_train_enc)
                 best_params_da = {'reg_param': 0.0}
-                st.write(f"**QDA Parameters:** {best_params_da} | **{n_pcs_for_classification} PCs**")
-
+                st.write(f"**QDA Parameters:** {best_params_da} | Using **{n_pcs_for_classification} PCs**")
         else:  # GaussianNB
             if optimize_da:
                 param_grid_da = {'var_smoothing': np.logspace(0, -9, num=10)}
@@ -358,12 +591,12 @@ else:
                 da_grid.fit(X_train, y_train_enc)
                 best_da = da_grid.best_estimator_
                 best_params_da = da_grid.best_params_
-                st.write(f"**Optimized GaussianNB Parameters:** {best_params_da} | **{n_pcs_for_classification} PCs**")
+                st.write(f"**Optimized GaussianNB Parameters:** {best_params_da} | Using **{n_pcs_for_classification} PCs**")
             else:
                 best_da = GaussianNB()
                 best_da.fit(X_train, y_train_enc)
                 best_params_da = {'var_smoothing': 1e-9}
-                st.write(f"**GaussianNB Parameters:** {best_params_da} | **{n_pcs_for_classification} PCs**")
+                st.write(f"**GaussianNB Parameters:** {best_params_da} | Using **{n_pcs_for_classification} PCs**")
 
         y_pred_da = best_da.predict(X_test)
         acc_da = accuracy_score(y_test_enc, y_pred_da)
@@ -374,19 +607,17 @@ else:
         st.plotly_chart(fig_cm_da, use_container_width=True)
         st.write(f"**Accuracy:** {acc_da:.2f}")
 
-        # Decision boundary only when using exactly 2 PCs
         if n_pcs_for_classification == 2:
             st.subheader(f"{da_type} Decision Boundary{title_suffix}")
             fig_da, ax_da = plt.subplots(figsize=(8, 6))
             plot_decision_regions(X_class, y_encoded, clf=best_da, legend=2, ax=ax_da)
             ax_da.set_xlabel('PC1')
             ax_da.set_ylabel('PC2')
-            ax_da.set_title(f'{da_type} Decision Boundary{title_suffix} ({n_pcs_for_classification} PCs)')
+            ax_da.set_title(f'{da_type} Decision Boundary{title_suffix}')
             st.pyplot(fig_da)
         else:
             st.info(f"Decision boundary plot is only available when using exactly 2 PCs (currently using {n_pcs_for_classification}).")
 
-    # ------------------- KNN -------------------
     if run_knn:
         if optimize_knn:
             param_grid_knn = {'n_neighbors': range(1, min(21, len(y_train_enc)//2 + 1))}
@@ -394,36 +625,41 @@ else:
             knn_grid.fit(X_train, y_train_enc)
             best_knn = knn_grid.best_estimator_
             best_params_knn = knn_grid.best_params_
-            st.write(f"**Optimized KNN Parameters:** {best_params_knn} | **{n_pcs_for_classification} PCs**")
+            best_k = best_params_knn['n_neighbors']
+            st.write(f"**Optimized KNN Parameters:** {best_params_knn} | Using **{n_pcs_for_classification} PCs**")
         else:
             best_knn = KNeighborsClassifier(n_neighbors=k)
             best_knn.fit(X_train, y_train_enc)
             best_params_knn = {'n_neighbors': k}
-            st.write(f"**KNN Parameters:** {best_params_knn} | **{n_pcs_for_classification} PCs**")
+            best_k = k
+            st.write(f"**KNN Parameters:** {best_params_knn} | Using **{n_pcs_for_classification} PCs**")
 
         y_pred_knn = best_knn.predict(X_test)
         acc_knn = accuracy_score(y_test_enc, y_pred_knn)
         st.subheader(f"KNN Confusion Matrix{title_suffix}")
         cm_knn = confusion_matrix(y_test_enc, y_pred_knn)
+        knn_title = f"KNN Confusion Matrix{title_suffix}"
+        if label_mode != "Default Labels":
+            knn_title += f" (k={best_k})"
         fig_cm_knn = px.imshow(cm_knn, text_auto=True, x=unique_y, y=unique_y,
-                               color_continuous_scale='Blues', title=f"KNN Confusion Matrix{title_suffix}")
+                               color_continuous_scale='Blues', title=knn_title)
         st.plotly_chart(fig_cm_knn, use_container_width=True)
         st.write(f"**Accuracy:** {acc_knn:.2f}")
 
         if n_pcs_for_classification == 2:
             st.subheader(f"KNN Decision Boundary{title_suffix}")
+            knn_db_title = f'KNN Decision Boundary{title_suffix}'
+            if label_mode != "Default Labels":
+                knn_db_title += f' (k={best_k})'
             fig_knn, ax_knn = plt.subplots(figsize=(8, 6))
             plot_decision_regions(X_class, y_encoded, clf=best_knn, legend=2, ax=ax_knn)
             ax_knn.set_xlabel('PC1')
             ax_knn.set_ylabel('PC2')
-            ax_knn.set_title(f'KNN Decision Boundary{title_suffix} (k={best_params_knn["n_neighbors"]})')
+            ax_knn.set_title(knn_db_title)
             st.pyplot(fig_knn)
         else:
             st.info(f"Decision boundary plot is only available when using exactly 2 PCs (currently using {n_pcs_for_classification}).")
 
-# K-Means Clustering section (unchanged)
-if run_kmeans and n_total_pcs >= 2:
-    # ... (your original KMeans code using X_pca_2d_global or update to use first 2 PCs)
-
+# Footer
 st.markdown("---")
-st.caption("Updated version: Number of PCs for classification is now adjustable.")
+st.caption("Reusable for any dataset. Number of PCs for classification is now adjustable. Fixed indentation error.")
