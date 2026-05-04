@@ -229,18 +229,29 @@ use_custom_colors = st.toggle(
 
 color_map_hex = {}
 if use_custom_colors:
-    st.markdown("Enter a 6-digit hex color for each label (e.g. `#FF5733`). Leave blank to use the default.")
-    cols = st.columns(min(4, n_labels))
+    st.markdown("Type a 6-digit hex code for each label below (e.g. `#FF5733`). A live color swatch confirms your choice. Leave blank to keep the default.")
+    n_cols = min(4, n_labels)
+    col_groups = st.columns(n_cols)
     for idx, lbl in enumerate(unique_labels_all):
         default_hex = DEFAULT_COLORS[idx % len(DEFAULT_COLORS)]
-        user_input  = cols[idx % len(cols)].text_input(
-            label=lbl, value=default_hex, key=f"color_{lbl}"
-        )
-        user_input = user_input.strip()
-        if user_input == '' or not is_valid_hex(user_input):
-            color_map_hex[lbl] = default_hex
-        else:
-            color_map_hex[lbl] = '#' + user_input.lstrip('#')
+        with col_groups[idx % n_cols]:
+            # Show label name prominently so it's unambiguous which label this controls
+            st.markdown(f"**`{lbl}`**")
+            user_input = st.text_input(
+                label=f"Hex color for {lbl}",
+                value=default_hex,
+                key=f"color_{lbl}",
+                label_visibility="collapsed",   # label already shown above as bold text
+            )
+            user_input = user_input.strip()
+            chosen_hex = ('#' + user_input.lstrip('#')) if (user_input != '' and is_valid_hex(user_input)) else default_hex
+            color_map_hex[lbl] = chosen_hex
+            # Live swatch
+            st.markdown(
+                f'<div style="width:100%;height:18px;border-radius:4px;background:{chosen_hex};'
+                f'border:1px solid #ccc;margin-bottom:6px;"></div>',
+                unsafe_allow_html=True
+            )
 else:
     for idx, lbl in enumerate(unique_labels_all):
         color_map_hex[lbl] = DEFAULT_COLORS[idx % len(DEFAULT_COLORS)]
@@ -295,13 +306,12 @@ with st.sidebar.expander("Classification Options", expanded=False):
     if run_da:
         da_type     = st.selectbox("Discriminant Analysis Type", ["LDA","QDA","GaussianNB"], index=0)
         optimize_da = st.checkbox("Optimize Discriminant Analysis parameters")
-        show_lda_3d    = st.checkbox("Show 3D LDA/QDA Plot", value=True)
         show_ellipse   = st.checkbox("Show Ellipse (JMP-style) Plot", value=True)
         ellipse_std    = st.slider("Ellipse confidence (σ)", 1.0, 3.0, 2.0, 0.5,
                                     help="Number of standard deviations for the confidence ellipses.")
     else:
         da_type = "LDA"; optimize_da = False
-        show_lda_3d = False; show_ellipse = False; ellipse_std = 2.0
+        show_ellipse = False; ellipse_std = 2.0
 
     run_knn   = st.checkbox("Run K-Nearest Neighbors (KNN)")
     optimize_knn = st.checkbox("Optimize KNN parameters") if run_knn else False
@@ -454,50 +464,118 @@ if show_scree:
     st.plotly_chart(fig_scree, use_container_width=True)
     st.info(f"Total variance explained by shown PCs: {np.sum(var_ratios[:n_scree]):.1%} (≥99% reached at PC{n_99})")
 
-# ── 4. Factor Loadings Plot (selected PC) ────────────────────────────────────
+# ── 4. Factor Loadings Plot ──────────────────────────────────────────────────
 if show_loadings:
     if pca_full is None:
         st.warning("Loadings not available for pre-computed PC mode.")
     else:
-        pc_label = f"PC{loadings_pc_idx + 1}"
-        st.subheader(f"Factor Loadings Plot – {pc_label}")
-        if loadings_pc_idx >= n_total_pcs or var_ratios[loadings_pc_idx] == 0:
-            st.warning(f"{pc_label} has zero or no variance—cannot display loadings.")
+        # ── Part A: Top-3 PCs grouped plot (original behaviour) ──────────────
+        st.subheader("Factor Loadings Plot (Top 3 PCs)")
+        max_pcs      = min(3, n_total_pcs)
+        valid_indices = [i for i in range(max_pcs) if var_ratios[i] > 0]
+        num_valid     = len(valid_indices)
+        if num_valid == 0:
+            st.warning("No PCs with >0% variance.")
         else:
-            loadings_row = pd.Series(pca_full.components_[loadings_pc_idx], index=X.columns)
+            st.info(f"Showing loadings for {num_valid} valid PCs (out of top 3)")
+            loadings_top3 = pd.DataFrame(
+                pca_full.components_[valid_indices],
+                columns=X.columns,
+                index=[f'PC{i+1}' for i in valid_indices]
+            )
+            loadings_top3_abs = loadings_top3.abs()
+
+            if loadings_type == "Bar Graph (Discrete, e.g., GCMS)":
+                fig_top3 = go.Figure()
+                bar_colors   = px.colors.qualitative.Set3[:num_valid]
+                max_loadings = loadings_top3_abs.max(axis=0)
+                sorted_vars  = max_loadings.sort_values(ascending=False).index
+                width        = 0.25
+                for i, pc in enumerate(loadings_top3.index):
+                    pc_data = loadings_top3_abs.loc[pc].loc[sorted_vars]
+                    fig_top3.add_trace(go.Bar(
+                        y=pc_data.values, x=sorted_vars,
+                        name=pc, marker_color=bar_colors[i],
+                        width=width, base=0, offsetgroup=i
+                    ))
+                fig_top3.update_layout(
+                    barmode='group', height=400, showlegend=True,
+                    title="Loadings: Grouped Bar Graph (Abs Values, Top 3 PCs)",
+                    xaxis_title="Variables", yaxis_title="Loading Magnitude"
+                )
+                fig_top3.update_xaxes(tickangle=45, tickfont=dict(size=9))
+            else:
+                original_vars = X.columns.tolist()
+                loadings_melt = loadings_top3_abs.reset_index().melt(
+                    id_vars='index', var_name='Variable', value_name='Loading'
+                )
+                loadings_melt['PC']       = loadings_melt['index']
+                loadings_melt['Variable'] = pd.Categorical(
+                    loadings_melt['Variable'], categories=original_vars, ordered=True
+                )
+                loadings_melt = loadings_melt.sort_values(['PC','Variable'])
+                fig_top3 = px.line(
+                    loadings_melt, x='Variable', y='Loading', color='PC',
+                    markers=False,
+                    title="Loadings: Connected Line Plot (Abs Values, Top 3 PCs)",
+                    labels={'Variable':'Factors/Variables','Loading':'Loading Magnitude'}
+                )
+                fig_top3.update_traces(line=dict(width=2, dash='solid'))
+                fig_top3.update_xaxes(tickangle=45, tickfont=dict(size=9))
+                if len(original_vars) > 50:
+                    st.warning("Many variables (>50)—zoom/pan the plot for details.")
+
+            st.plotly_chart(fig_top3, use_container_width=True)
+            st.subheader("Loadings Table (Top 3 PCs)")
+            st.dataframe(loadings_top3)
+
+        # ── Part B: Single-PC slider plot ─────────────────────────────────────
+        st.subheader("Factor Loadings – Single PC Explorer")
+        sel_pc_num = st.slider(
+            "Select PC to explore its loadings",
+            min_value=1, max_value=min(10, n_total_pcs), value=1,
+            help="Use this slider to inspect any individual PC's factor loadings."
+        )
+        sel_pc_idx = sel_pc_num - 1
+        sel_pc_label = f"PC{sel_pc_num}"
+
+        if sel_pc_idx >= n_total_pcs or var_ratios[sel_pc_idx] == 0:
+            st.warning(f"{sel_pc_label} has zero or no variance—cannot display loadings.")
+        else:
+            loadings_row     = pd.Series(pca_full.components_[sel_pc_idx], index=X.columns)
             loadings_abs_row = loadings_row.abs()
-            st.info(f"Variance explained by {pc_label}: {var_ratios[loadings_pc_idx]:.1%}")
+            st.info(f"Variance explained by {sel_pc_label}: {var_ratios[sel_pc_idx]:.1%}")
 
             if loadings_type == "Bar Graph (Discrete, e.g., GCMS)":
                 sorted_vars = loadings_abs_row.sort_values(ascending=False).index
-                fig_load = go.Figure()
-                fig_load.add_trace(go.Bar(
+                fig_single  = go.Figure()
+                fig_single.add_trace(go.Bar(
                     x=sorted_vars, y=loadings_abs_row.loc[sorted_vars].values,
-                    marker_color='steelblue', name=pc_label
+                    marker_color='steelblue', name=sel_pc_label
                 ))
-                fig_load.update_layout(
-                    title=f"Loadings: {pc_label} (Abs Values)",
+                fig_single.update_layout(
+                    title=f"Loadings: {sel_pc_label} (Abs Values)",
                     xaxis_title="Variables", yaxis_title="Loading Magnitude", height=400
                 )
-                fig_load.update_xaxes(tickangle=45, tickfont=dict(size=9))
+                fig_single.update_xaxes(tickangle=45, tickfont=dict(size=9))
             else:
                 original_vars = X.columns.tolist()
-                fig_load = go.Figure()
-                fig_load.add_trace(go.Scatter(
+                fig_single    = go.Figure()
+                fig_single.add_trace(go.Scatter(
                     x=original_vars, y=loadings_abs_row.loc[original_vars].values,
-                    mode='lines', line=dict(width=2), name=pc_label
+                    mode='lines', line=dict(width=2), name=sel_pc_label
                 ))
-                fig_load.update_layout(
-                    title=f"Loadings: {pc_label} (Connected Line, Abs Values)",
+                fig_single.update_layout(
+                    title=f"Loadings: {sel_pc_label} (Connected Line, Abs Values)",
                     xaxis_title="Variables", yaxis_title="Loading Magnitude", height=400
                 )
-                fig_load.update_xaxes(tickangle=45, tickfont=dict(size=9))
-                if len(original_vars) > 50:
+                fig_single.update_xaxes(tickangle=45, tickfont=dict(size=9))
+                if len(X.columns) > 50:
                     st.warning("Many variables (>50)—zoom/pan for details.")
 
-            st.plotly_chart(fig_load, use_container_width=True)
-            st.subheader(f"Loadings Table – {pc_label}")
-            st.dataframe(loadings_row.to_frame(name=pc_label))
+            st.plotly_chart(fig_single, use_container_width=True)
+            st.subheader(f"Loadings Table – {sel_pc_label}")
+            st.dataframe(loadings_row.to_frame(name=sel_pc_label))
 
 # ── Download buttons ─────────────────────────────────────────────────────────
 st.subheader("Download PCA Results")
@@ -600,50 +678,6 @@ else:
         )
     else:
         X_train, X_test, y_train_enc, y_test_enc = X_class, X_class, y_encoded, y_encoded
-
-    # ── LDA vs QDA fitness test ──────────────────────────────────────────────
-    if run_da and da_type in ("LDA", "QDA"):
-        st.subheader("LDA vs QDA Model Fit Comparison")
-        try:
-            # Cross-validated accuracy for both
-            lda_cv = cross_val_score(LDA(), X_train, y_train_enc, cv=min(5, len(y_train_enc)), scoring='accuracy')
-            qda_cv = cross_val_score(QDA(reg_param=0.001), X_train, y_train_enc, cv=min(5, len(y_train_enc)), scoring='accuracy')
-            lda_mean, lda_std = lda_cv.mean(), lda_cv.std()
-            qda_mean, qda_std = qda_cv.mean(), qda_cv.std()
-
-            col_lda, col_qda = st.columns(2)
-            col_lda.metric("LDA CV Accuracy", f"{lda_mean:.3f}", f"±{lda_std:.3f}")
-            col_qda.metric("QDA CV Accuracy", f"{qda_mean:.3f}", f"±{qda_std:.3f}")
-
-            # Box-M-style homogeneity of covariance test (Bartlett's approximation per class pair)
-            classes = np.unique(y_train_enc)
-            group_covs = []
-            for c in classes:
-                Xc = X_train[y_train_enc == c]
-                if len(Xc) > 1:
-                    group_covs.append(np.cov(Xc.T))
-
-            if len(group_covs) >= 2 and group_covs[0].ndim >= 1:
-                # Simple Frobenius-norm similarity between class covariance matrices
-                cov_diffs = []
-                for i in range(len(group_covs)):
-                    for j in range(i+1, len(group_covs)):
-                        diff = np.linalg.norm(group_covs[i] - group_covs[j], 'fro')
-                        cov_diffs.append(diff)
-                avg_diff = np.mean(cov_diffs)
-
-                st.markdown(f"""
-**Covariance Homogeneity (avg Frobenius distance between class covariance matrices):** `{avg_diff:.4f}`
-
-| Metric | Interpretation |
-|---|---|
-| Avg covariance difference | {"Low → covariances similar → **LDA likely better**" if avg_diff < 1.0 else "High → covariances differ → **QDA likely better**"} |
-| Best CV accuracy | {"**LDA**" if lda_mean >= qda_mean else "**QDA**"} (`{max(lda_mean, qda_mean):.3f}`) |
-
-> **Recommendation:** {"Use **LDA** — covariances appear homogeneous and LDA has higher/equal cross-validated accuracy." if (avg_diff < 1.0 and lda_mean >= qda_mean) else "Use **QDA** — covariances differ between classes or QDA achieves better cross-validated accuracy."}
-""")
-        except Exception as e:
-            st.warning(f"Could not complete LDA/QDA comparison: {e}")
 
     # ── Train selected DA model ──────────────────────────────────────────────
     if run_da:
@@ -758,52 +792,6 @@ else:
                 legend_title="Class"
             )
             st.plotly_chart(fig_ell, use_container_width=True)
-
-        # ── 3D LDA/QDA Plot ───────────────────────────────────────────────────
-        if show_lda_3d and n_pcs_for_classification >= 3:
-            st.subheader(f"3D {da_type} Plot (PC1 × PC2 × PC3)")
-            X3d   = X_pca[:, :3]
-
-            if label_mode != "Default Labels":
-                X3d = X3d[mask_selected]
-
-            # Train a fresh model on 3 PCs for the 3D view
-            try:
-                if da_type == "LDA":
-                    model_3d = LDA()
-                elif da_type == "QDA":
-                    model_3d = QDA(reg_param=0.001)
-                else:
-                    model_3d = GaussianNB()
-                model_3d.fit(X3d, y_encoded)
-                y_pred_3d = model_3d.predict(X3d)
-
-                df_3d = pd.DataFrame(X3d, columns=['PC1','PC2','PC3'])
-                df_3d['True Label']      = [str(unique_y[e]) for e in y_encoded]
-                df_3d['Predicted Label'] = [str(unique_y[e]) for e in y_pred_3d]
-                df_3d['Correct']         = (y_encoded == y_pred_3d)
-
-                fig_3d_da = px.scatter_3d(
-                    df_3d, x='PC1', y='PC2', z='PC3',
-                    color='True Label',
-                    symbol='Correct',
-                    color_discrete_map={str(unique_y[i]): color_map_hex.get(str(unique_y[i]), DEFAULT_COLORS[i%len(DEFAULT_COLORS)])
-                                        for i in range(len(unique_y))},
-                    title=f"3D {da_type} – True Labels (symbol = correct prediction)",
-                    opacity=0.85
-                )
-                fig_3d_da.update_traces(marker=dict(size=5))
-                fig_3d_da.update_layout(scene=dict(
-                    xaxis_title=f"PC1 ({var_ratios[0]:.1%})",
-                    yaxis_title=f"PC2 ({var_ratios[1]:.1%})",
-                    zaxis_title=f"PC3 ({var_ratios[2]:.1%})"
-                ), height=600)
-                st.plotly_chart(fig_3d_da, use_container_width=True)
-                st.caption("Circles = correctly classified | Crosses = misclassified")
-            except Exception as e:
-                st.warning(f"3D {da_type} plot failed: {e}")
-        elif show_lda_3d:
-            st.info(f"3D {da_type} plot requires at least 3 PCs for classification (currently {n_pcs_for_classification}).")
 
     # ── KNN ──────────────────────────────────────────────────────────────────
     if run_knn:
