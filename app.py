@@ -8,7 +8,7 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis as QDA
 from sklearn.naive_bayes import GaussianNB
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import confusion_matrix, accuracy_score, silhouette_score
 import plotly.express as px
 import plotly.graph_objects as go
@@ -241,22 +241,27 @@ else:
         st.error("No numerical columns found.")
         st.stop()
 
-    # Internal Standard label selector (needs y to exist first)
-    is_label_col = None
+    # Internal Standard feature selector (uses column/feature names, not sample labels)
+    is_feature_col = None
     if norm_option == 'Internal Standard':
-        is_label_col = st.sidebar.selectbox(
-            "Internal Standard label",
-            options=sorted(y.unique()),
+        is_feature_col = st.sidebar.selectbox(
+            "Internal Standard feature (column)",
+            options=list(X.columns),
             help=(
-                "Select which label identifies your Internal Standard rows. "
-                "Each variable in every sample is divided by that variable's IS value. "
-                "Multiple IS rows are averaged. IS rows themselves are retained in the dataset."
+                "Select the feature column (row 1 of your CSV) that is your Internal Standard. "
+                "Each sample's value for every feature is divided by that sample's own IS value. "
+                "This is per-sample normalization — each chromatogram is divided by its own IS peak, "
+                "independently of all other samples."
             )
         )
 
-    # ── Spectral Preprocessing ────────────────────────────────────────────────
+    # ── Spectral Preprocessing (per-sample) ───────────────────────────────────
+    # SNV: mean-centers and scales each sample (row) by its own std — strictly per-sample.
+    # Z-score: mean-centers and scales each feature (column) across all samples — per-feature/population.
+    # Both are applied row-wise or column-wise as labeled; no cross-sample mixing for SNV.
     X_processed = X.copy()
     if preprocess_option == 'SNV':
+        # Per-sample: each row is normalized by its own mean and std
         for i in range(X_processed.shape[0]):
             row_mean = np.mean(X_processed.iloc[i])
             row_std  = np.std(X_processed.iloc[i])
@@ -265,6 +270,7 @@ else:
             else:
                 st.warning(f"Row {i+1} zero variance — SNV skipped.")
     elif preprocess_option == 'Z-score':
+        # Per-feature across all samples (population-level scaling)
         scaler      = StandardScaler()
         X_processed = pd.DataFrame(scaler.fit_transform(X_processed),
                                     columns=X.columns, index=X.index)
@@ -272,29 +278,34 @@ else:
     if preprocess_option != 'None':
         st.success(f"Spectral preprocessing applied: {preprocess_option}")
 
-    # ── Normalization ─────────────────────────────────────────────────────────
+    # ── Normalization (all methods below are strictly per-sample) ─────────────
+    # Each row (sample/chromatogram) is normalized using only that row's own values.
+    # No values from other samples are used — this is not population normalization.
     if norm_option != 'None':
         X_norm = X.copy()
 
         if norm_option == 'Unit Area (Total Sum)':
+            # Per-sample: divide each sample by its own total area sum
             for i in range(X_norm.shape[0]):
                 row_sum = X_norm.iloc[i].sum()
                 if row_sum != 0:
                     X_norm.iloc[i] = X_norm.iloc[i] / row_sum
                 else:
                     st.warning(f"Row {i+1} sum = 0 — Unit Area normalization skipped.")
-            st.success("Normalization applied: Unit Area (Total Sum)")
+            st.success("Normalization applied: Unit Area / Total Sum (per sample)")
 
         elif norm_option == 'Unit Vector (L2 Norm)':
+            # Per-sample: divide each sample by its own Euclidean length
             for i in range(X_norm.shape[0]):
                 r_l2 = np.sqrt(np.sum(X_norm.iloc[i] ** 2))
                 if r_l2 > 0:
                     X_norm.iloc[i] = X_norm.iloc[i] / r_l2
                 else:
                     st.warning(f"Row {i+1} L2 = 0 — Unit Vector normalization skipped.")
-            st.success("Normalization applied: Unit Vector (L2 Norm)")
+            st.success("Normalization applied: Unit Vector / L2 Norm (per sample)")
 
         elif norm_option == 'Min-Max (per sample)':
+            # Per-sample: rescale each sample to [0, 1] using its own min and max
             for i in range(X_norm.shape[0]):
                 r_min, r_max = X_norm.iloc[i].min(), X_norm.iloc[i].max()
                 if r_max > r_min:
@@ -304,28 +315,30 @@ else:
             st.success("Normalization applied: Min-Max (per sample)")
 
         elif norm_option == 'Internal Standard':
-            if is_label_col is None:
-                st.error("Select an Internal Standard label in the sidebar.")
+            if is_feature_col is None:
+                st.error("Select an Internal Standard feature column in the sidebar.")
                 st.stop()
-            is_mask = (y == is_label_col)
-            if is_mask.sum() == 0:
-                st.error(f"No rows found with label '{is_label_col}'.")
+            if is_feature_col not in X_norm.columns:
+                st.error(f"Feature '{is_feature_col}' not found in the dataset.")
                 st.stop()
-            # Average IS rows across replicates → one IS value per variable
-            is_values = X_norm.loc[is_mask].mean(axis=0)
-            zero_vars = is_values[is_values == 0].index.tolist()
-            if zero_vars:
+            # Per-sample: each sample is divided by its own IS value for each feature.
+            # sample[feature_i] /= sample[IS_feature]  — no cross-sample mixing at all.
+            is_col_values = X_norm[is_feature_col].copy()  # IS value for each sample (row)
+            zero_is_rows  = is_col_values[is_col_values == 0].index.tolist()
+            if zero_is_rows:
                 st.warning(
-                    f"{len(zero_vars)} variable(s) have an IS value of 0 and will NOT be "
-                    f"normalized (divided by zero). First few: {zero_vars[:5]}"
+                    f"{len(zero_is_rows)} sample(s) have IS value = 0 and will NOT be normalized. "
+                    f"Row indices: {zero_is_rows[:5]}{'...' if len(zero_is_rows) > 5 else ''}"
                 )
-            for col in X_norm.columns:
-                if is_values[col] != 0:
-                    X_norm[col] = X_norm[col] / is_values[col]
-                # zero-IS variables are left un-normalized
+            for i in X_norm.index:
+                is_val = is_col_values.loc[i]
+                if is_val != 0:
+                    # Divide every feature in this sample by this sample's IS value
+                    X_norm.loc[i] = X_norm.loc[i] / is_val
+                # If IS = 0 for this sample, leave it un-normalized
             st.success(
                 f"Normalization applied: Internal Standard "
-                f"(IS = '{is_label_col}', {is_mask.sum()} row(s) averaged)"
+                f"(IS feature = '{is_feature_col}', normalized per-sample to each sample's own IS value)"
             )
 
         X = X_norm
@@ -480,16 +493,14 @@ with st.sidebar.expander("Classification Options", expanded=False):
     run_da = st.checkbox("Run Discriminant Analysis")
     if run_da:
         da_type      = st.selectbox("Discriminant Analysis Type", ["LDA","QDA","GaussianNB"], index=0)
-        optimize_da  = st.checkbox("Optimize DA parameters")
         show_ellipse = st.checkbox("Show Ellipse (JMP-style) Plot", value=True)
         ellipse_std  = st.slider("Ellipse confidence (σ)", 1.0, 3.0, 2.0, 0.5)
     else:
-        da_type = "LDA"; optimize_da = False
+        da_type = "LDA"
         show_ellipse = False; ellipse_std = 2.0
 
-    run_knn      = st.checkbox("Run K-Nearest Neighbors (KNN)")
-    optimize_knn = st.checkbox("Optimize KNN parameters") if run_knn else False
-    k            = st.slider("K value", 1, 20, 5) if (run_knn and not optimize_knn) else 5
+    run_knn = st.checkbox("Run K-Nearest Neighbors (KNN)")
+    k       = st.slider("K value", 1, 20, 5) if run_knn else 5
 
     run_kmeans = st.checkbox("Run K-Means Clustering")
     if run_kmeans:
@@ -819,7 +830,7 @@ else:
     if label_mode == "Default Labels":
         y_selected           = y_global
         title_suffix         = " (Multi-class)"
-        X_pca_full_for_sweep = X_pca
+        X_pca_full_for_sweep = X_pca          # all PCs available for sweep
     else:
         if not selected_for_a or not selected_for_b:
             st.warning("Select groups to run combined classification.")
@@ -845,41 +856,89 @@ else:
     else:
         X_train, X_test, y_train_enc, y_test_enc = X_class, X_class, y_encoded, y_encoded
 
-    # ── DA Model ──────────────────────────────────────────────────────────────
+    # ── helper: build accuracy-vs-PCs figure ─────────────────────────────────
+    def accuracy_vs_pcs_plot(clf_factory, label, X_full, y_enc, n_selected, n_scree_max):
+        """
+        Runs cross-validated accuracy for 1..n_scree_max PCs using clf_factory().
+        Returns a plotly figure and a summary string.
+        clf_factory: callable with no args that returns a fresh unfitted classifier.
+        """
+        cv_folds = min(5, len(y_enc))
+        sweep_pcs, sweep_mean, sweep_std = [], [], []
+        max_sweep = min(n_scree_max, X_full.shape[1])
+
+        for n_pc in range(1, max_sweep + 1):
+            X_sw = X_full[:, :n_pc]
+            try:
+                scores = cross_val_score(clf_factory(), X_sw, y_enc,
+                                         cv=cv_folds, scoring='accuracy')
+                sweep_pcs.append(n_pc)
+                sweep_mean.append(scores.mean())
+                sweep_std.append(scores.std())
+            except Exception:
+                pass   # skip PCs that cause numerical errors (e.g. QDA with too few samples)
+
+        if not sweep_pcs:
+            return None, "Could not compute accuracy sweep."
+
+        arr = np.array(sweep_mean)
+        std = np.array(sweep_std)
+        best_idx = int(np.argmax(arr))
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=sweep_pcs, y=arr,
+            mode='lines+markers',
+            line=dict(color='royalblue', width=2),
+            marker=dict(size=7),
+            name='CV Accuracy',
+            error_y=dict(type='data', array=list(std), visible=True, color='lightblue')
+        ))
+        # Mark currently selected PC count
+        if n_selected in sweep_pcs:
+            fig.add_vline(
+                x=n_selected, line_dash='dash', line_color='orange',
+                annotation_text=f"Selected ({n_selected} PCs)",
+                annotation_position="top left"
+            )
+        # Mark best PC count
+        fig.add_vline(
+            x=sweep_pcs[best_idx], line_dash='dot', line_color='green',
+            annotation_text=f"Best ({sweep_pcs[best_idx]} PCs, acc={arr[best_idx]:.3f})",
+            annotation_position="top right"
+        )
+        fig.update_layout(
+            title=f"{label} — Cross-Validated Accuracy vs. Number of PCs",
+            xaxis_title="Number of PCs",
+            yaxis_title="CV Accuracy",
+            yaxis=dict(range=[max(0.0, float(arr.min()) - 0.1), 1.02]),
+            xaxis=dict(tickmode='linear', dtick=1),
+            height=420,
+        )
+
+        sel_txt = ""
+        if n_selected - 1 < len(arr):
+            sel_txt = (f"  |  Selected {n_selected} PCs → "
+                       f"{arr[n_selected-1]:.3f} ± {std[n_selected-1]:.3f}")
+        summary = (f"Best: **{arr[best_idx]:.3f} ± {std[best_idx]:.3f}** "
+                   f"at **{sweep_pcs[best_idx]} PCs**" + sel_txt)
+        return fig, summary
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # DA MODEL
+    # ══════════════════════════════════════════════════════════════════════════
     if run_da:
         if da_type == "LDA":
-            if optimize_da:
-                param_grid_da = {'solver': ['svd','lsqr','eigen']}
-                da_grid = GridSearchCV(LDA(), param_grid_da, cv=min(5, len(y_train_enc)))
-                da_grid.fit(X_train, y_train_enc)
-                best_da = da_grid.best_estimator_; best_params_da = da_grid.best_params_
-            else:
-                best_da = LDA(); best_da.fit(X_train, y_train_enc)
-                best_params_da = {'solver': 'svd'}
-            st.write(f"**LDA Parameters:** {best_params_da} | Using **{n_pcs_for_classification} PCs**")
-
+            best_da = LDA()
+            st.write(f"**LDA** | Using **{n_pcs_for_classification} PCs**")
         elif da_type == "QDA":
-            if optimize_da:
-                param_grid_da = {'reg_param': [0.0, 0.001, 0.01, 0.1, 0.5, 1.0]}
-                da_grid = GridSearchCV(QDA(), param_grid_da, cv=min(5, len(y_train_enc)))
-                da_grid.fit(X_train, y_train_enc)
-                best_da = da_grid.best_estimator_; best_params_da = da_grid.best_params_
-            else:
-                best_da = QDA(reg_param=0.001); best_da.fit(X_train, y_train_enc)
-                best_params_da = {'reg_param': 0.001}
-            st.write(f"**QDA Parameters:** {best_params_da} | Using **{n_pcs_for_classification} PCs**")
+            best_da = QDA(reg_param=0.001)
+            st.write(f"**QDA** (reg_param=0.001) | Using **{n_pcs_for_classification} PCs**")
+        else:
+            best_da = GaussianNB()
+            st.write(f"**GaussianNB** | Using **{n_pcs_for_classification} PCs**")
 
-        else:  # GaussianNB
-            if optimize_da:
-                param_grid_da = {'var_smoothing': np.logspace(0, -9, num=10)}
-                da_grid = GridSearchCV(GaussianNB(), param_grid_da, cv=min(5, len(y_train_enc)))
-                da_grid.fit(X_train, y_train_enc)
-                best_da = da_grid.best_estimator_; best_params_da = da_grid.best_params_
-            else:
-                best_da = GaussianNB(); best_da.fit(X_train, y_train_enc)
-                best_params_da = {'var_smoothing': 1e-9}
-            st.write(f"**GaussianNB Parameters:** {best_params_da} | Using **{n_pcs_for_classification} PCs**")
-
+        best_da.fit(X_train, y_train_enc)
         y_pred_da = best_da.predict(X_test)
         acc_da    = accuracy_score(y_test_enc, y_pred_da)
 
@@ -889,77 +948,28 @@ else:
                                color_continuous_scale='Blues',
                                title=f"{da_type} Confusion Matrix{title_suffix}")
         st.plotly_chart(fig_cm_da, use_container_width=True)
-        st.write(f"**Accuracy:** {acc_da:.2f}")
+        st.write(f"**Accuracy at {n_pcs_for_classification} PCs:** {acc_da:.3f}")
 
-        # ── Accuracy vs Number of PCs sweep ───────────────────────────────────
-        st.subheader(f"{da_type} — Accuracy vs. Number of PCs")
-        max_sweep = min(max_pcs_for_class, X_pca_full_for_sweep.shape[1])
-        cv_folds  = min(5, len(y_encoded))
-        sweep_pcs, sweep_acc_mean, sweep_acc_std = [], [], []
+        # ── Accuracy vs PCs sweep (covers 1 → n_scree PCs) ───────────────────
+        st.subheader(f"{da_type} Accuracy vs. Number of PCs (1 to {n_scree})")
+        if da_type == "LDA":
+            clf_factory = lambda: LDA()
+        elif da_type == "QDA":
+            clf_factory = lambda: QDA(reg_param=0.001)
+        else:
+            clf_factory = lambda: GaussianNB()
 
-        for n_pc in range(1, max_sweep + 1):
-            X_sw = X_pca_full_for_sweep[:, :n_pc]
-            try:
-                if da_type == "LDA":
-                    clf_sw = LDA()
-                elif da_type == "QDA":
-                    clf_sw = QDA(reg_param=0.001)
-                else:
-                    clf_sw = GaussianNB()
-                cv_scores = cross_val_score(clf_sw, X_sw, y_encoded, cv=cv_folds, scoring='accuracy')
-                sweep_pcs.append(n_pc)
-                sweep_acc_mean.append(cv_scores.mean())
-                sweep_acc_std.append(cv_scores.std())
-            except Exception:
-                pass
-
-        if sweep_pcs:
-            sweep_arr   = np.array(sweep_acc_mean)
-            sweep_std   = np.array(sweep_acc_std)
-            best_pc_idx = int(np.argmax(sweep_arr))
-
-            fig_sweep = go.Figure()
-            fig_sweep.add_trace(go.Scatter(
-                x=sweep_pcs, y=sweep_arr,
-                mode='lines+markers',
-                line=dict(color='royalblue', width=2),
-                marker=dict(size=7),
-                name='CV Accuracy',
-                error_y=dict(type='data', array=list(sweep_std), visible=True, color='lightblue')
-            ))
-            fig_sweep.add_vline(
-                x=n_pcs_for_classification, line_dash='dash', line_color='orange',
-                annotation_text=f"Selected ({n_pcs_for_classification} PCs)",
-                annotation_position="top left"
-            )
-            fig_sweep.add_vline(
-                x=sweep_pcs[best_pc_idx], line_dash='dot', line_color='green',
-                annotation_text=f"Best ({sweep_pcs[best_pc_idx]} PCs, {sweep_arr[best_pc_idx]:.2f})",
-                annotation_position="top right"
-            )
-            fig_sweep.update_layout(
-                title=f"{da_type} Cross-Validated Accuracy vs. Number of PCs",
-                xaxis_title="Number of PCs",
-                yaxis_title="CV Accuracy",
-                yaxis=dict(range=[max(0, float(sweep_arr.min()) - 0.1), 1.0]),
-                xaxis=dict(tickmode='linear', dtick=1),
-                height=400,
-            )
+        fig_sweep, sweep_summary = accuracy_vs_pcs_plot(
+            clf_factory, da_type, X_pca_full_for_sweep,
+            y_encoded, n_pcs_for_classification, n_scree
+        )
+        if fig_sweep:
             st.plotly_chart(fig_sweep, use_container_width=True)
+            st.info(sweep_summary)
+        else:
+            st.warning(sweep_summary)
 
-            sel_acc_info = ""
-            if n_pcs_for_classification - 1 < len(sweep_arr):
-                sel_idx      = n_pcs_for_classification - 1
-                sel_acc_info = (
-                    f" Currently selected: **{n_pcs_for_classification} PCs** "
-                    f"({sweep_arr[sel_idx]:.3f} ± {sweep_std[sel_idx]:.3f})."
-                )
-            st.info(
-                f"Best CV accuracy: **{sweep_arr[best_pc_idx]:.3f} ± {sweep_std[best_pc_idx]:.3f}** "
-                f"at **{sweep_pcs[best_pc_idx]} PCs**." + sel_acc_info
-            )
-
-        # ── 2D Decision boundary ──────────────────────────────────────────────
+        # ── 2D decision boundary ──────────────────────────────────────────────
         if n_pcs_for_classification == 2:
             st.subheader(f"{da_type} Decision Boundary{title_suffix}")
             try:
@@ -1002,45 +1012,52 @@ else:
                         showlegend=False
                     ))
             fig_ell.update_layout(
-                title=f"{da_type} Confidence Ellipses ({ellipse_std:.0f}σ) on PC1 vs PC2",
+                title=f"{da_type} Confidence Ellipses ({ellipse_std:.0f}σ) — PC1 vs PC2",
                 xaxis_title="PC1", yaxis_title="PC2", height=550, legend_title="Class"
             )
             st.plotly_chart(fig_ell, use_container_width=True)
 
-    # ── KNN ────────────────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+    # KNN
+    # ══════════════════════════════════════════════════════════════════════════
     if run_knn:
-        if optimize_knn:
-            param_grid_knn = {'n_neighbors': range(1, min(21, len(y_train_enc)//2 + 1))}
-            knn_grid = GridSearchCV(KNeighborsClassifier(), param_grid_knn, cv=min(5,len(y_train_enc)))
-            knn_grid.fit(X_train, y_train_enc)
-            best_knn = knn_grid.best_estimator_; best_params_knn = knn_grid.best_params_
-            best_k   = best_params_knn['n_neighbors']
-            st.write(f"**Optimized KNN:** {best_params_knn} | Using **{n_pcs_for_classification} PCs**")
-        else:
-            best_knn = KNeighborsClassifier(n_neighbors=k)
-            best_knn.fit(X_train, y_train_enc)
-            best_params_knn = {'n_neighbors': k}; best_k = k
-            st.write(f"**KNN Parameters:** {best_params_knn} | Using **{n_pcs_for_classification} PCs**")
+        best_knn = KNeighborsClassifier(n_neighbors=k)
+        best_knn.fit(X_train, y_train_enc)
+        st.write(f"**KNN** (k={k}) | Using **{n_pcs_for_classification} PCs**")
 
         y_pred_knn = best_knn.predict(X_test)
         acc_knn    = accuracy_score(y_test_enc, y_pred_knn)
-        knn_title  = f"KNN Confusion Matrix{title_suffix}" + (f" (k={best_k})" if label_mode != "Default Labels" else "")
-        st.subheader(f"KNN Confusion Matrix{title_suffix}")
+
+        knn_title = f"KNN Confusion Matrix{title_suffix}"
+        st.subheader(knn_title)
         cm_knn = confusion_matrix(y_test_enc, y_pred_knn)
         fig_cm_knn = px.imshow(cm_knn, text_auto=True, x=list(unique_y), y=list(unique_y),
                                 color_continuous_scale='Blues', title=knn_title)
         st.plotly_chart(fig_cm_knn, use_container_width=True)
-        st.write(f"**Accuracy:** {acc_knn:.2f}")
+        st.write(f"**Accuracy at {n_pcs_for_classification} PCs:** {acc_knn:.3f}")
+
+        # ── KNN Accuracy vs PCs sweep ─────────────────────────────────────────
+        st.subheader(f"KNN Accuracy vs. Number of PCs (1 to {n_scree}, k={k})")
+        fig_knn_sweep, knn_sweep_summary = accuracy_vs_pcs_plot(
+            lambda: KNeighborsClassifier(n_neighbors=k),
+            f"KNN (k={k})", X_pca_full_for_sweep,
+            y_encoded, n_pcs_for_classification, n_scree
+        )
+        if fig_knn_sweep:
+            st.plotly_chart(fig_knn_sweep, use_container_width=True)
+            st.info(knn_sweep_summary)
+        else:
+            st.warning(knn_sweep_summary)
 
         if n_pcs_for_classification == 2:
             st.subheader(f"KNN Decision Boundary{title_suffix}")
             try:
                 from mlxtend.plotting import plot_decision_regions
-                fig_knn, ax_knn = plt.subplots(figsize=(8, 6))
+                fig_knn_db, ax_knn = plt.subplots(figsize=(8, 6))
                 plot_decision_regions(X_class, y_encoded, clf=best_knn, legend=2, ax=ax_knn)
                 ax_knn.set_xlabel('PC1'); ax_knn.set_ylabel('PC2')
                 ax_knn.set_title(f'KNN Decision Boundary{title_suffix}')
-                st.pyplot(fig_knn); plt.close(fig_knn)
+                st.pyplot(fig_knn_db); plt.close(fig_knn_db)
             except Exception as e:
                 st.warning(f"KNN decision boundary plot failed: {e}")
         else:
@@ -1051,6 +1068,6 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 st.caption(
-    "v11 — Normalization sidebar (Unit Area, Unit Vector, Min-Max, Internal Standard), "
-    "PCA axis-collapse diagnostics with histograms, DA accuracy-vs-PCs sweep plot."
+    "v12 — Per-sample normalization confirmed; IS uses feature column name; "
+    "DA optimization removed; accuracy-vs-PCs sweep covers 1→scree PCs for both DA and KNN."
 )
