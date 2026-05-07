@@ -831,7 +831,10 @@ if show_loadings:
 # DOWNLOAD PCA RESULTS
 # ══════════════════════════════════════════════════════════════════════════════
 st.subheader("Download PCA Results")
+
+# ── Row 1: PC Scores and Scree data ──────────────────────────────────────────
 col1, col2 = st.columns(2)
+
 with col1:
     if is_precomputed:
         X_pca_save = X_pca[:, :num_save_pcs]
@@ -840,16 +843,85 @@ with col1:
         X_pca_save = pca_save.fit_transform(X_scaled)
     df_scores          = pd.DataFrame(X_pca_save, columns=[f'PC{i+1}' for i in range(num_save_pcs)])
     df_scores['label'] = y.values
-    st.download_button("Download PC Scores CSV", df_scores.to_csv(index=False), "pc_scores.csv", "text/csv")
+    st.download_button(
+        "⬇ PC Scores CSV",
+        df_scores.to_csv(index=False),
+        "pc_scores.csv", "text/csv",
+        help=f"Scores for the top {num_save_pcs} PCs, one row per sample, plus a label column."
+    )
+
 with col2:
+    # Scree data: individual and cumulative variance for ALL PCs
+    df_scree = pd.DataFrame({
+        "PC":                    [f"PC{i+1}" for i in range(n_total_pcs)],
+        "Variance_Explained_%":  [round(v * 100, 4) for v in var_ratios],
+        "Cumulative_Variance_%": [round(c * 100, 4) for c in np.cumsum(var_ratios)],
+    })
+    st.download_button(
+        "⬇ Scree Data CSV",
+        df_scree.to_csv(index=False),
+        "scree_data.csv", "text/csv",
+        help=(
+            "Individual and cumulative variance explained for every PC. "
+            "Use this to recreate the scree plot in Excel, Prism, R, etc."
+        )
+    )
+
+# ── Row 2: Factor Loadings (raw) and Factor Loadings (absolute values) ───────
+col3, col4 = st.columns(2)
+
+with col3:
     if pca_full is not None:
-        loadings_save = pd.DataFrame(pca_full.components_[:num_save_pcs],
-                                      columns=X.columns,
-                                      index=[f'PC{i+1}' for i in range(num_save_pcs)])
-        st.download_button("Download Loadings CSV", loadings_save.to_csv(index=True), "pca_loadings.csv", "text/csv")
+        # Raw (signed) loadings for all PCs up to num_save_pcs
+        loadings_raw = pd.DataFrame(
+            pca_full.components_[:num_save_pcs],
+            columns=X.columns,
+            index=[f'PC{i+1}' for i in range(num_save_pcs)]
+        )
+        # Transpose so variables are rows (more convenient for plotting)
+        loadings_raw_T = loadings_raw.T.reset_index()
+        loadings_raw_T.rename(columns={'index': 'Variable'}, inplace=True)
+        st.download_button(
+            "⬇ Factor Loadings CSV (raw)",
+            loadings_raw_T.to_csv(index=False),
+            "factor_loadings_raw.csv", "text/csv",
+            help=(
+                f"Signed loadings for PC1–PC{num_save_pcs}. "
+                "Rows = variables, columns = PCs. "
+                "Raw values retain direction; use these when sign matters."
+            )
+        )
     else:
         st.info("Loadings not available for pre-computed mode.")
-st.info(f"Downloads include top {num_save_pcs} PCs.")
+
+with col4:
+    if pca_full is not None:
+        # Absolute loadings (magnitude only) for all PCs up to num_save_pcs
+        loadings_abs = pd.DataFrame(
+            np.abs(pca_full.components_[:num_save_pcs]),
+            columns=X.columns,
+            index=[f'PC{i+1}' for i in range(num_save_pcs)]
+        )
+        loadings_abs_T = loadings_abs.T.reset_index()
+        loadings_abs_T.rename(columns={'index': 'Variable'}, inplace=True)
+        st.download_button(
+            "⬇ Factor Loadings CSV (absolute)",
+            loadings_abs_T.to_csv(index=False),
+            "factor_loadings_abs.csv", "text/csv",
+            help=(
+                f"Absolute (unsigned) loadings for PC1–PC{num_save_pcs}. "
+                "Rows = variables, columns = PCs. "
+                "Use these to compare contribution magnitudes without sign."
+            )
+        )
+    else:
+        st.info("Loadings not available for pre-computed mode.")
+
+st.caption(
+    f"PC Scores and Loadings include top **{num_save_pcs} PCs** (adjust in Download Options sidebar). "
+    "Scree data includes **all PCs**. "
+    "Loadings CSVs are transposed: rows = variables, columns = PCs — ready to plot directly."
+)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CLUSTERING
@@ -1260,6 +1332,6 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 st.caption(
-    "v13 — PCA pipeline summary card; model parameter detail cards for LDA/QDA/GaussianNB/KNN; "
-    "sweep fixes (starts at PC2, surfaces errors, safe cv_folds)."
+    "v14 — Scree data CSV (all PCs, individual + cumulative variance), "
+    "factor loadings raw CSV (signed), factor loadings absolute CSV (magnitude)."
 )
