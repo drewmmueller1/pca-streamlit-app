@@ -10,7 +10,9 @@ from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis as QDA
 from sklearn.naive_bayes import GaussianNB
 from sklearn.tree import DecisionTreeClassifier, export_text, plot_tree
 from sklearn.model_selection import train_test_split, cross_val_score, KFold
-from sklearn.metrics import confusion_matrix, accuracy_score, silhouette_score, mean_squared_error
+from sklearn.metrics import (confusion_matrix, accuracy_score, silhouette_score,
+                             mean_squared_error, classification_report,
+                             roc_curve, auc, roc_auc_score)
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -1057,6 +1059,230 @@ else:
             sel_txt = f"  |  Selected {n_selected} → {arr[si]:.3f} ± {std[si]:.3f}"
         return fig, f"Best: **{arr[best]:.3f} ± {std[best]:.3f}** at **{sweep_pcs[best]} {component_label}s**{sel_txt}"
 
+    # ── shared visualisation helpers (called for every classifier) ────────────
+
+    def render_classification_report(clf_name, y_true, y_pred, classes):
+        """Formatted classification report table."""
+        st.subheader(f"{clf_name} — Classification Report")
+        report = classification_report(y_true, y_pred,
+                                        target_names=[str(c) for c in classes],
+                                        output_dict=True, zero_division=0)
+        rows = []
+        for cls in [str(c) for c in classes]:
+            if cls in report:
+                rows.append({
+                    "Class":     cls,
+                    "Precision": round(report[cls]["precision"], 3),
+                    "Recall":    round(report[cls]["recall"],    3),
+                    "F1-Score":  round(report[cls]["f1-score"],  3),
+                    "Support":   int(report[cls]["support"]),
+                })
+        for avg in ["macro avg", "weighted avg"]:
+            if avg in report:
+                rows.append({
+                    "Class":     avg,
+                    "Precision": round(report[avg]["precision"], 3),
+                    "Recall":    round(report[avg]["recall"],    3),
+                    "F1-Score":  round(report[avg]["f1-score"],  3),
+                    "Support":   int(report[avg]["support"]),
+                })
+        df_report = pd.DataFrame(rows)
+        st.dataframe(df_report, use_container_width=True, hide_index=True)
+        st.caption(
+            "**Precision** = of all predicted positives, how many were correct.  "
+            "**Recall** = of all actual positives, how many were found.  "
+            "**F1** = harmonic mean of precision and recall.  "
+            "**Support** = number of true samples in that class."
+        )
+        return df_report
+
+    def render_cv_boxplot(clf_factories_dict, X_full, y_enc, n_pcs):
+        """
+        CV box plot — runs 10-repeat 5-fold CV for each classifier in clf_factories_dict
+        and plots the distribution of fold accuracies as overlapping box plots.
+        clf_factories_dict: {label: callable returning fresh clf}
+        """
+        st.subheader("Cross-Validation Accuracy — Model Comparison")
+        n_samples, n_classes = len(y_enc), len(np.unique(y_enc))
+        cv_folds = min(5, n_samples // n_classes)
+        if cv_folds < 2:
+            st.warning(f"⚠️ Too few samples per class for CV box plot (need ≥2 folds).")
+            return
+        n_repeats  = 10
+        X_sub      = X_full[:, :n_pcs]
+        fig_box    = go.Figure()
+        colors_box = px.colors.qualitative.Set2
+        for idx, (name, factory) in enumerate(clf_factories_dict.items()):
+            all_scores = []
+            for seed in range(n_repeats):
+                try:
+                    from sklearn.model_selection import StratifiedKFold
+                    skf    = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=seed)
+                    scores = cross_val_score(factory(), X_sub, y_enc,
+                                             cv=skf, scoring='accuracy', error_score=np.nan)
+                    all_scores.extend([s for s in scores if not np.isnan(s)])
+                except Exception:
+                    pass
+            if all_scores:
+                fig_box.add_trace(go.Box(
+                    y=all_scores, name=name,
+                    boxpoints='all', jitter=0.4, pointpos=0,
+                    marker=dict(size=5, color=colors_box[idx % len(colors_box)], opacity=0.6),
+                    line=dict(color=colors_box[idx % len(colors_box)]),
+                    fillcolor=colors_box[idx % len(colors_box)],
+                    opacity=0.7
+                ))
+        fig_box.update_layout(
+            title=f"CV Accuracy Distribution — {n_repeats}×{cv_folds}-fold, {n_pcs} {component_label}s",
+            yaxis_title="Accuracy", yaxis=dict(range=[0, 1.05]),
+            xaxis_title="Model", height=460,
+            showlegend=False
+        )
+        st.plotly_chart(fig_box, use_container_width=True)
+        st.caption(
+            f"Each box shows {n_repeats} repeats × {cv_folds} folds = up to {n_repeats*cv_folds} accuracy "
+            "values. Box = IQR, line = median, dots = individual fold scores. "
+            "Wider boxes indicate higher variability — important to interpret alongside the median on small datasets."
+        )
+
+    def render_roc_curve(clf_name, clf, X_tr, X_te, y_tr, y_te, classes, has_proba):
+        """
+        ROC curve. Binary: single curve. Multi-class: one-vs-rest curve per class.
+        has_proba: True if clf has predict_proba, False if only decision_function.
+        """
+        st.subheader(f"{clf_name} — ROC Curve")
+        n_classes = len(classes)
+        try:
+            if has_proba:
+                y_score = clf.predict_proba(X_te)
+            else:
+                y_score = clf.decision_function(X_te)
+                if n_classes == 2 and y_score.ndim == 1:
+                    y_score = y_score.reshape(-1, 1)
+
+            fig_roc = go.Figure()
+            # diagonal reference
+            fig_roc.add_trace(go.Scatter(x=[0,1], y=[0,1], mode='lines',
+                                          line=dict(dash='dash', color='gray', width=1),
+                                          name='Random (AUC=0.50)', showlegend=True))
+
+            if n_classes == 2:
+                score_col = y_score[:, 1] if y_score.ndim == 2 else y_score.ravel()
+                fpr, tpr, _ = roc_curve(y_te, score_col)
+                roc_auc     = auc(fpr, tpr)
+                fig_roc.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines',
+                                              line=dict(width=2, color='royalblue'),
+                                              name=f"AUC = {roc_auc:.3f}"))
+                st.caption(f"**AUC = {roc_auc:.3f}** — area under the ROC curve. "
+                           "1.0 = perfect; 0.5 = random.")
+            else:
+                # one-vs-rest per class
+                from sklearn.preprocessing import label_binarize
+                y_te_bin = label_binarize(y_te, classes=list(range(n_classes)))
+                roc_colors = px.colors.qualitative.Set1
+                aucs = []
+                for i, cls_name in enumerate(classes):
+                    if y_score.ndim == 2 and i < y_score.shape[1]:
+                        col_score = y_score[:, i]
+                    else:
+                        continue
+                    if len(np.unique(y_te_bin[:, i])) < 2:
+                        continue
+                    fpr, tpr, _ = roc_curve(y_te_bin[:, i], col_score)
+                    roc_auc     = auc(fpr, tpr)
+                    aucs.append(roc_auc)
+                    fig_roc.add_trace(go.Scatter(
+                        x=fpr, y=tpr, mode='lines',
+                        line=dict(width=2, color=roc_colors[i % len(roc_colors)]),
+                        name=f"{cls_name} (AUC={roc_auc:.3f})"
+                    ))
+                if aucs:
+                    st.caption(f"One-vs-Rest ROC curves. Macro-avg AUC = **{np.mean(aucs):.3f}**")
+
+            fig_roc.update_layout(
+                xaxis_title="False Positive Rate", yaxis_title="True Positive Rate",
+                xaxis=dict(range=[0,1]), yaxis=dict(range=[0,1.02]),
+                height=460, legend=dict(x=0.55, y=0.05)
+            )
+            st.plotly_chart(fig_roc, use_container_width=True)
+
+        except Exception as e:
+            st.warning(f"ROC curve could not be computed: {e}")
+
+    def render_probability_heatmap(clf_name, clf, X_class_2d, y_enc, classes, has_proba):
+        """
+        Probability heatmap — only for classifiers that output predict_proba.
+        Plots posterior probability of each class across the 2D PC space.
+        """
+        if not has_proba:
+            st.info(f"{clf_name} does not produce class probabilities — probability heatmap not available.")
+            return
+        if X_class_2d.shape[1] < 2:
+            st.info("Probability heatmap requires at least 2 components.")
+            return
+
+        st.subheader(f"{clf_name} — Posterior Probability Heatmap")
+        n_classes  = len(classes)
+        x_min, x_max = X_class_2d[:, 0].min(), X_class_2d[:, 0].max()
+        y_min, y_max = X_class_2d[:, 1].min(), X_class_2d[:, 1].max()
+        pad_x = (x_max - x_min) * 0.12
+        pad_y = (y_max - y_min) * 0.12
+        res   = 120
+        xx, yy = np.meshgrid(
+            np.linspace(x_min - pad_x, x_max + pad_x, res),
+            np.linspace(y_min - pad_y, y_max + pad_y, res)
+        )
+        grid_pts = np.c_[xx.ravel(), yy.ravel()]
+        try:
+            proba = clf.predict_proba(grid_pts)   # (res*res, n_classes)
+        except Exception as e:
+            st.warning(f"Could not compute probabilities on grid: {e}")
+            return
+
+        # One heatmap subplot per class
+        n_cols  = min(3, n_classes)
+        n_rows  = int(np.ceil(n_classes / n_cols))
+        fig_ph  = make_subplots(rows=n_rows, cols=n_cols,
+                                 subplot_titles=[str(c) for c in classes])
+        for i, cls_name in enumerate(classes):
+            row = i // n_cols + 1
+            col = i %  n_cols + 1
+            Z   = proba[:, i].reshape(xx.shape)
+            fig_ph.add_trace(
+                go.Heatmap(z=Z, x=xx[0], y=yy[:,0],
+                           colorscale='Blues', zmin=0, zmax=1,
+                           showscale=(i == n_classes - 1),
+                           colorbar=dict(title="P(class)", len=0.8) if i == n_classes-1 else None,
+                           name=str(cls_name)),
+                row=row, col=col
+            )
+            # Overlay scatter points coloured by true class
+            for j, cn in enumerate(classes):
+                mask = (y_enc == j)
+                ch   = color_map_hex.get(str(cn), DEFAULT_COLORS[j % len(DEFAULT_COLORS)])
+                fig_ph.add_trace(
+                    go.Scatter(x=X_class_2d[mask, 0], y=X_class_2d[mask, 1],
+                               mode='markers',
+                               marker=dict(color=ch, size=7, line=dict(color='white', width=0.5)),
+                               name=str(cn), showlegend=(i == 0)),
+                    row=row, col=col
+                )
+        fig_ph.update_layout(
+            title=f"{clf_name} — Posterior P(class) across {component_label}1 × {component_label}2 space",
+            height=380 * n_rows, showlegend=True
+        )
+        for ax in fig_ph.layout:
+            if ax.startswith('xaxis'):
+                fig_ph.layout[ax].title = dict(text=f"{component_label}1")
+            if ax.startswith('yaxis'):
+                fig_ph.layout[ax].title = dict(text=f"{component_label}2")
+        st.plotly_chart(fig_ph, use_container_width=True)
+        st.caption(
+            "Color intensity = model's confidence that a grid point belongs to that class. "
+            "Deep blue = high probability; white = low. Dots = actual data points colored by true class. "
+            "Uncertainty near boundaries shows where the model is least confident."
+        )
+
     # ── DA ────────────────────────────────────────────────────────────────────
     if run_da:
         if da_type == "LDA":
@@ -1143,6 +1369,27 @@ else:
                 xaxis_title=f"{component_label}1", yaxis_title=f"{component_label}2", height=550)
             st.plotly_chart(fig_ell, use_container_width=True)
 
+        # ── New formal visuals ─────────────────────────────────────────────────
+        render_classification_report(da_type, y_test_enc, y_pred_da, unique_y)
+
+        da_has_proba = hasattr(best_da, "predict_proba")
+        render_roc_curve(da_type, best_da, X_train, X_test, y_train_enc, y_test_enc, unique_y, da_has_proba)
+
+        if n_pcs_for_classification >= 2:
+            render_probability_heatmap(da_type, best_da, X_class[:, :2], y_encoded, unique_y, da_has_proba)
+
+        # CV box plot — compare against whichever other models are also enabled
+        da_cv_factories = {da_type: (lambda: LDA()) if da_type=="LDA" else
+                                     (lambda: QDA(reg_param=0.001)) if da_type=="QDA" else
+                                     (lambda: GaussianNB())}
+        if run_knn:
+            da_cv_factories[f"KNN (k={k})"] = lambda: KNeighborsClassifier(n_neighbors=k)
+        if run_dt:
+            da_cv_factories[f"DTree (d={dt_max_depth})"] = lambda: DecisionTreeClassifier(
+                max_depth=dt_max_depth, criterion=dt_criterion,
+                min_samples_leaf=dt_min_samples, random_state=42)
+        render_cv_boxplot(da_cv_factories, X_pca_full_for_sweep, y_encoded, n_pcs_for_classification)
+
     # ── KNN ───────────────────────────────────────────────────────────────────
     if run_knn:
         best_knn = KNeighborsClassifier(n_neighbors=k)
@@ -1187,6 +1434,28 @@ else:
                 st.warning(f"KNN decision boundary failed: {e}")
         else:
             st.info(f"Decision boundary only for exactly 2 {component_label}s (currently {n_pcs_for_classification}).")
+
+        # ── New formal visuals ─────────────────────────────────────────────────
+        render_classification_report(f"KNN (k={k})", y_test_enc, y_pred_knn, unique_y)
+
+        knn_has_proba = True  # KNeighborsClassifier always has predict_proba
+        render_roc_curve(f"KNN (k={k})", best_knn, X_train, X_test,
+                          y_train_enc, y_test_enc, unique_y, knn_has_proba)
+
+        if n_pcs_for_classification >= 2:
+            render_probability_heatmap(f"KNN (k={k})", best_knn,
+                                        X_class[:, :2], y_encoded, unique_y, knn_has_proba)
+
+        knn_cv_factories = {f"KNN (k={k})": lambda: KNeighborsClassifier(n_neighbors=k)}
+        if run_da:
+            knn_cv_factories[da_type] = (lambda: LDA()) if da_type=="LDA" else \
+                                         (lambda: QDA(reg_param=0.001)) if da_type=="QDA" else \
+                                         (lambda: GaussianNB())
+        if run_dt:
+            knn_cv_factories[f"DTree (d={dt_max_depth})"] = lambda: DecisionTreeClassifier(
+                max_depth=dt_max_depth, criterion=dt_criterion,
+                min_samples_leaf=dt_min_samples, random_state=42)
+        render_cv_boxplot(knn_cv_factories, X_pca_full_for_sweep, y_encoded, n_pcs_for_classification)
 
     # ── DECISION TREE ─────────────────────────────────────────────────────────
     if run_dt:
@@ -1299,11 +1568,34 @@ else:
         st.caption("Importance = total reduction in impurity weighted by the number of samples reaching each split. "
                    "Values sum to 1.0 across all components used.")
 
+        # ── New formal visuals ─────────────────────────────────────────────────
+        render_classification_report(f"Decision Tree (depth={dt_max_depth})",
+                                      y_test_enc, y_pred_dt, unique_y)
+
+        dt_has_proba = True  # DecisionTreeClassifier always has predict_proba
+        render_roc_curve(f"Decision Tree (depth={dt_max_depth})", best_dt,
+                          X_train, X_test, y_train_enc, y_test_enc, unique_y, dt_has_proba)
+
+        if n_pcs_for_classification >= 2:
+            render_probability_heatmap(f"Decision Tree (depth={dt_max_depth})", best_dt,
+                                        X_class[:, :2], y_encoded, unique_y, dt_has_proba)
+
+        dt_cv_factories = {f"DTree (d={dt_max_depth})": lambda: DecisionTreeClassifier(
+            max_depth=dt_max_depth, criterion=dt_criterion,
+            min_samples_leaf=dt_min_samples, random_state=42)}
+        if run_da:
+            dt_cv_factories[da_type] = (lambda: LDA()) if da_type=="LDA" else \
+                                        (lambda: QDA(reg_param=0.001)) if da_type=="QDA" else \
+                                        (lambda: GaussianNB())
+        if run_knn:
+            dt_cv_factories[f"KNN (k={k})"] = lambda: KNeighborsClassifier(n_neighbors=k)
+        render_cv_boxplot(dt_cv_factories, X_pca_full_for_sweep, y_encoded, n_pcs_for_classification)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # FOOTER
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 st.caption(
-    "v16 — Decision Tree classifier: confusion matrix, accuracy-vs-PCs sweep, "
-    "decision boundary, visual tree diagram, text rules, and feature importance chart."
+    "v17 — Classification Report Table, ROC Curve, Posterior Probability Heatmap, "
+    "and CV Box Plot added for DA, KNN, and Decision Tree."
 )
