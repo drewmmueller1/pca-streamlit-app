@@ -589,6 +589,111 @@ plot_color_map = {lbl: color_map_hex.get(lbl, DEFAULT_COLORS[i%len(DEFAULT_COLOR
                   for i,lbl in enumerate(unique_plot_labels)}
 
 # ══════════════════════════════════════════════════════════════════════════════
+# PCR / PLS REGRESSION DIAGNOSTICS  (shown first so prediction quality is
+# immediately visible before exploring the component space)
+# ══════════════════════════════════════════════════════════════════════════════
+if analysis_mode != "PCA (Principal Component Analysis)" and y_target is not None:
+    st.subheader(f"{analysis_mode.split('(')[0].strip()} Regression Diagnostics")
+
+    if analysis_mode == "PCR (Principal Component Regression)":
+        st.markdown("#### Cross-Validation MSE vs. Number of PCs")
+        with st.sidebar.expander("PCR Options", expanded=True):
+            max_pcr_comps = st.slider("Max PCs to evaluate (CV)", 2, min(20, n_total_pcs), min(10, n_total_pcs))
+            n_pcr_final   = st.slider("PCs to use for final model", 2, max_pcr_comps, 3,
+                                       help="Number of PCs selected for the final PCR prediction.")
+        from sklearn.linear_model import LinearRegression
+        cv_mse = []
+        for n_pc in range(1, max_pcr_comps+1):
+            X_sw  = X_scores[:, :n_pc]
+            kf    = KFold(n_splits=min(5, len(y_target)), shuffle=True, random_state=42)
+            preds = np.zeros(len(y_target))
+            for tr, te in kf.split(X_sw):
+                lr = LinearRegression().fit(X_sw[tr], y_target[tr])
+                preds[te] = lr.predict(X_sw[te])
+            cv_mse.append(mean_squared_error(y_target, preds))
+        best_pcr = int(np.argmin(cv_mse)) + 1
+        fig_cv = go.Figure()
+        fig_cv.add_trace(go.Scatter(x=list(range(1,max_pcr_comps+1)), y=cv_mse,
+                                     mode='lines+markers', line=dict(color='royalblue',width=2),
+                                     marker=dict(size=7), name='CV MSE'))
+        fig_cv.add_vline(x=best_pcr, line_dash='dot', line_color='green',
+                          annotation_text=f"Best ({best_pcr} PCs, MSE={cv_mse[best_pcr-1]:.4f})",
+                          annotation_position="top right")
+        fig_cv.add_vline(x=n_pcr_final, line_dash='dash', line_color='orange',
+                          annotation_text=f"Selected ({n_pcr_final} PCs)",
+                          annotation_position="top left")
+        fig_cv.update_layout(title="PCR: CV MSE vs. Number of PCs",
+                              xaxis_title="Number of PCs", yaxis_title="CV MSE",
+                              xaxis=dict(tickmode='linear',dtick=1), height=400)
+        st.plotly_chart(fig_cv, use_container_width=True)
+
+        from sklearn.linear_model import LinearRegression
+        lr_final = LinearRegression().fit(X_scores[:, :n_pcr_final], y_target)
+        y_pred   = lr_final.predict(X_scores[:, :n_pcr_final])
+        r2       = 1 - np.sum((y_target - y_pred)**2) / np.sum((y_target - y_target.mean())**2)
+        mse_full = mean_squared_error(y_target, y_pred)
+        st.info(f"PCR final model — {n_pcr_final} PCs | R² = {r2:.4f} | MSE = {mse_full:.4f}")
+
+    else:  # PLS
+        st.markdown("#### Cross-Validation MSE vs. Number of Latent Variables")
+        max_pls_cv = min(20, n_max_components)
+        cv_mse_pls = []
+        for n_lv in range(1, max_pls_cv+1):
+            kf    = KFold(n_splits=min(5, len(y_target)), shuffle=True, random_state=42)
+            preds = np.zeros(len(y_target))
+            for tr, te in kf.split(X_scaled):
+                m = PLSRegression(n_components=n_lv, scale=False)
+                m.fit(X_scaled[tr], y_target[tr])
+                preds[te] = m.predict(X_scaled[te]).ravel()
+            cv_mse_pls.append(mean_squared_error(y_target, preds))
+        best_pls = int(np.argmin(cv_mse_pls)) + 1
+        fig_cv_pls = go.Figure()
+        fig_cv_pls.add_trace(go.Scatter(x=list(range(1,max_pls_cv+1)), y=cv_mse_pls,
+                                         mode='lines+markers', line=dict(color='royalblue',width=2),
+                                         marker=dict(size=7), name='CV MSE'))
+        fig_cv_pls.add_vline(x=best_pls, line_dash='dot', line_color='green',
+                              annotation_text=f"Best ({best_pls} LVs, MSE={cv_mse_pls[best_pls-1]:.4f})",
+                              annotation_position="top right")
+        fig_cv_pls.add_vline(x=n_pls_components, line_dash='dash', line_color='orange',
+                              annotation_text=f"Selected ({n_pls_components} LVs)",
+                              annotation_position="top left")
+        fig_cv_pls.update_layout(title="PLS: CV MSE vs. Number of Latent Variables",
+                                  xaxis_title="Number of LVs", yaxis_title="CV MSE",
+                                  xaxis=dict(tickmode='linear',dtick=1), height=400)
+        st.plotly_chart(fig_cv_pls, use_container_width=True)
+
+        y_pred   = pls_model.predict(X_scaled).ravel()
+        r2       = 1 - np.sum((y_target-y_pred)**2)/np.sum((y_target-y_target.mean())**2)
+        mse_full = mean_squared_error(y_target, y_pred)
+        st.info(f"PLS model — {n_pls_components} LVs | R² = {r2:.4f} | MSE = {mse_full:.4f}")
+
+    # Predicted vs Actual
+    st.markdown("#### Predicted vs. Actual")
+    df_pred = pd.DataFrame({'Actual': y_target, 'Predicted': y_pred, 'label': y.values})
+    fig_pva = px.scatter(df_pred, x='Actual', y='Predicted', color='label',
+                          color_discrete_map=plot_color_map,
+                          title="Predicted vs. Actual",
+                          labels={'Actual':'Actual Y','Predicted':'Predicted Y'})
+    mn_val, mx_val = float(y_target.min()), float(y_target.max())
+    fig_pva.add_trace(go.Scatter(x=[mn_val,mx_val], y=[mn_val,mx_val],
+                                  mode='lines', line=dict(dash='dash',color='gray'),
+                                  name='1:1 line', showlegend=True))
+    fig_pva.update_layout(height=450)
+    st.plotly_chart(fig_pva, use_container_width=True)
+
+    # Residuals
+    st.markdown("#### Residuals Plot")
+    residuals = y_target - y_pred
+    df_res    = pd.DataFrame({'Predicted': y_pred, 'Residual': residuals, 'label': y.values})
+    fig_res   = px.scatter(df_res, x='Predicted', y='Residual', color='label',
+                            color_discrete_map=plot_color_map,
+                            title="Residuals vs. Predicted",
+                            labels={'Predicted':'Predicted Y','Residual':'Residual (Actual − Predicted)'})
+    fig_res.add_hline(y=0, line_dash='dash', line_color='gray')
+    fig_res.update_layout(height=420)
+    st.plotly_chart(fig_res, use_container_width=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 1. 2D SCORES PLOT
 # ══════════════════════════════════════════════════════════════════════════════
 if show_2d and n_total_pcs >= 2:
@@ -666,113 +771,6 @@ if show_scree:
     )
     st.plotly_chart(fig_scree, use_container_width=True)
     st.info(f"Shown: {np.sum(var_ratios[:n_scree]):.1%} | ≥99% at {component_label}{n_99_s}")
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PCR / PLS REGRESSION DIAGNOSTIC PLOTS
-# ══════════════════════════════════════════════════════════════════════════════
-if analysis_mode != "PCA (Principal Component Analysis)" and y_target is not None:
-    st.subheader(f"{analysis_mode.split('(')[0].strip()} Regression Diagnostics")
-
-    if analysis_mode == "PCR (Principal Component Regression)":
-        # --- CV / MSE plot across number of PCs ---
-        st.markdown("#### Cross-Validation MSE vs. Number of PCs")
-        with st.sidebar.expander("PCR Options", expanded=True):
-            max_pcr_comps = st.slider("Max PCs to evaluate (CV)", 2, min(20, n_total_pcs), min(10, n_total_pcs))
-            n_pcr_final   = st.slider("PCs to use for final model", 2, max_pcr_comps, 3,
-                                       help="Number of PCs selected for the final PCR prediction.")
-        from sklearn.linear_model import LinearRegression
-        cv_mse = []
-        for n_pc in range(1, max_pcr_comps+1):
-            X_sw  = X_scores[:, :n_pc]
-            kf    = KFold(n_splits=min(5, len(y_target)), shuffle=True, random_state=42)
-            preds = np.zeros(len(y_target))
-            for tr, te in kf.split(X_sw):
-                lr = LinearRegression().fit(X_sw[tr], y_target[tr])
-                preds[te] = lr.predict(X_sw[te])
-            cv_mse.append(mean_squared_error(y_target, preds))
-        best_pcr = int(np.argmin(cv_mse)) + 1
-        fig_cv = go.Figure()
-        fig_cv.add_trace(go.Scatter(x=list(range(1,max_pcr_comps+1)), y=cv_mse,
-                                     mode='lines+markers', line=dict(color='royalblue',width=2),
-                                     marker=dict(size=7), name='CV MSE'))
-        fig_cv.add_vline(x=best_pcr, line_dash='dot', line_color='green',
-                          annotation_text=f"Best ({best_pcr} PCs, MSE={cv_mse[best_pcr-1]:.4f})",
-                          annotation_position="top right")
-        fig_cv.add_vline(x=n_pcr_final, line_dash='dash', line_color='orange',
-                          annotation_text=f"Selected ({n_pcr_final} PCs)",
-                          annotation_position="top left")
-        fig_cv.update_layout(title="PCR: CV MSE vs. Number of PCs",
-                              xaxis_title="Number of PCs", yaxis_title="CV MSE",
-                              xaxis=dict(tickmode='linear',dtick=1), height=400)
-        st.plotly_chart(fig_cv, use_container_width=True)
-
-        # Final PCR model
-        from sklearn.linear_model import LinearRegression
-        lr_final = LinearRegression().fit(X_scores[:, :n_pcr_final], y_target)
-        y_pred   = lr_final.predict(X_scores[:, :n_pcr_final])
-        r2       = 1 - np.sum((y_target - y_pred)**2) / np.sum((y_target - y_target.mean())**2)
-        mse_full = mean_squared_error(y_target, y_pred)
-        st.info(f"PCR final model — {n_pcr_final} PCs | R² = {r2:.4f} | MSE = {mse_full:.4f}")
-
-    else:  # PLS
-        # --- CV / MSE plot across number of LVs ---
-        st.markdown("#### Cross-Validation MSE vs. Number of Latent Variables")
-        max_pls_cv = min(20, n_max_components)
-        cv_mse_pls = []
-        for n_lv in range(1, max_pls_cv+1):
-            kf    = KFold(n_splits=min(5, len(y_target)), shuffle=True, random_state=42)
-            preds = np.zeros(len(y_target))
-            for tr, te in kf.split(X_scaled):
-                m = PLSRegression(n_components=n_lv, scale=False)
-                m.fit(X_scaled[tr], y_target[tr])
-                preds[te] = m.predict(X_scaled[te]).ravel()
-            cv_mse_pls.append(mean_squared_error(y_target, preds))
-        best_pls = int(np.argmin(cv_mse_pls)) + 1
-        fig_cv_pls = go.Figure()
-        fig_cv_pls.add_trace(go.Scatter(x=list(range(1,max_pls_cv+1)), y=cv_mse_pls,
-                                         mode='lines+markers', line=dict(color='royalblue',width=2),
-                                         marker=dict(size=7), name='CV MSE'))
-        fig_cv_pls.add_vline(x=best_pls, line_dash='dot', line_color='green',
-                              annotation_text=f"Best ({best_pls} LVs, MSE={cv_mse_pls[best_pls-1]:.4f})",
-                              annotation_position="top right")
-        fig_cv_pls.add_vline(x=n_pls_components, line_dash='dash', line_color='orange',
-                              annotation_text=f"Selected ({n_pls_components} LVs)",
-                              annotation_position="top left")
-        fig_cv_pls.update_layout(title="PLS: CV MSE vs. Number of Latent Variables",
-                                  xaxis_title="Number of LVs", yaxis_title="CV MSE",
-                                  xaxis=dict(tickmode='linear',dtick=1), height=400)
-        st.plotly_chart(fig_cv_pls, use_container_width=True)
-
-        y_pred   = pls_model.predict(X_scaled).ravel()
-        r2       = 1 - np.sum((y_target-y_pred)**2)/np.sum((y_target-y_target.mean())**2)
-        mse_full = mean_squared_error(y_target, y_pred)
-        st.info(f"PLS model — {n_pls_components} LVs | R² = {r2:.4f} | MSE = {mse_full:.4f}")
-
-    # --- Predicted vs Actual ---
-    st.markdown("#### Predicted vs. Actual")
-    df_pred = pd.DataFrame({'Actual': y_target, 'Predicted': y_pred, 'label': y.values})
-    fig_pva = px.scatter(df_pred, x='Actual', y='Predicted', color='label',
-                          color_discrete_map=plot_color_map,
-                          title="Predicted vs. Actual",
-                          labels={'Actual':'Actual Y','Predicted':'Predicted Y'})
-    mn_val, mx_val = float(y_target.min()), float(y_target.max())
-    fig_pva.add_trace(go.Scatter(x=[mn_val,mx_val], y=[mn_val,mx_val],
-                                  mode='lines', line=dict(dash='dash',color='gray'),
-                                  name='1:1 line', showlegend=True))
-    fig_pva.update_layout(height=450)
-    st.plotly_chart(fig_pva, use_container_width=True)
-
-    # --- Residuals ---
-    st.markdown("#### Residuals Plot")
-    residuals = y_target - y_pred
-    df_res    = pd.DataFrame({'Predicted': y_pred, 'Residual': residuals, 'label': y.values})
-    fig_res   = px.scatter(df_res, x='Predicted', y='Residual', color='label',
-                            color_discrete_map=plot_color_map,
-                            title="Residuals vs. Predicted",
-                            labels={'Predicted':'Predicted Y','Residual':'Residual (Actual − Predicted)'})
-    fig_res.add_hline(y=0, line_dash='dash', line_color='gray')
-    fig_res.update_layout(height=420)
-    st.plotly_chart(fig_res, use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. LOADINGS / WEIGHTS PLOT
