@@ -1030,21 +1030,29 @@ else:
                 f"are multiples of 1/{min_class_n} of that class."
             )
 
-        st.info(
-            f"**Split advisor:** with {n_total} total samples across {n_classes_n} classes "
-            f"(smallest class = {min_class_n} samples).{replicate_note}  \n"
-            f"**Recommended split:** {best_pct}% test / {train_pct}% train "
-            f"(closest valid split to 20%).  \n"
-            f"**All valid test sizes:** {', '.join([f'{int(round(f*100))}%' for f in valid_test_sizes])}"
-        )
-
-        test_size = st.select_slider(
-            "Test size",
-            options=valid_test_sizes,
-            value=best_frac,
-            format_func=lambda f: f"{int(round(f*100))}% test / {int(round((1-f)*100))}% train",
-            help="Only fractions that guarantee at least 1 sample per class in each split are shown."
-        )
+        if len(valid_test_sizes) == 1:
+            test_size = valid_test_sizes[0]
+            st.info(
+                f"**Split advisor:** with {n_total} total samples across {n_classes_n} classes "
+                f"(smallest class = {min_class_n} samples).{replicate_note}  \n"
+                f"**Only one valid split is possible:** {int(round(test_size*100))}% test / "
+                f"{int(round((1-test_size)*100))}% train. This will be used automatically."
+            )
+        else:
+            st.info(
+                f"**Split advisor:** with {n_total} total samples across {n_classes_n} classes "
+                f"(smallest class = {min_class_n} samples).{replicate_note}  \n"
+                f"**Recommended split:** {best_pct}% test / {train_pct}% train "
+                f"(closest valid split to 20%).  \n"
+                f"**All valid test sizes:** {', '.join([f'{int(round(f*100))}%' for f in valid_test_sizes])}"
+            )
+            test_size = st.select_slider(
+                "Test size",
+                options=valid_test_sizes,
+                value=best_frac,
+                format_func=lambda f: f"{int(round(f*100))}% test / {int(round((1-f)*100))}% train",
+                help="Only fractions that guarantee at least 1 sample per class in each split are shown."
+            )
 
         try:
             X_train, X_test, y_train_enc, y_test_enc = train_test_split(
@@ -1106,6 +1114,42 @@ else:
         return fig, f"Best: **{arr[best]:.3f} ± {std[best]:.3f}** at **{sweep_pcs[best]} {component_label}s**{sel_txt}"
 
     # ── shared visualisation helpers (called for every classifier) ────────────
+
+    def show_train_test_accuracy(clf_name, clf, X_tr, X_te, y_tr, y_te, split_active):
+        """Shows train accuracy, test accuracy, and overfitting delta."""
+        acc_train = accuracy_score(y_tr, clf.predict(X_tr))
+        acc_test  = accuracy_score(y_te, clf.predict(X_te))
+        delta     = acc_train - acc_test
+
+        if split_active:
+            col_tr, col_te, col_d = st.columns(3)
+            col_tr.metric("🔵 Training Accuracy", f"{acc_train:.3f}",
+                           help="Accuracy on the training set — data the model has already seen.")
+            col_te.metric("🟢 Test Accuracy", f"{acc_test:.3f}",
+                           help="Accuracy on the held-out test set — never seen during training.")
+            col_d.metric("⚠️ Train − Test Gap", f"{delta:+.3f}",
+                          delta=f"{delta:+.3f}", delta_color="inverse",
+                          help="Positive = model fits training better than test (potential overfitting).")
+            if delta > 0.15:
+                st.warning(
+                    f"**Possible overfitting** — {clf_name} scores {delta:.1%} higher on training than test. "
+                    "Consider fewer PCs, stronger regularisation, or more data."
+                )
+            elif delta < -0.05:
+                st.warning(
+                    f"**Unusual result** — test accuracy ({acc_test:.3f}) exceeds training ({acc_train:.3f}). "
+                    "Check for data leakage or a very small test set."
+                )
+            else:
+                st.success(f"Train/test gap is small ({delta:+.3f}) — no strong sign of overfitting.")
+        else:
+            st.metric("📊 Accuracy (in-sample — no split)", f"{acc_train:.3f}",
+                       help="No split applied. Train = test = full dataset. May be optimistic.")
+            st.caption(
+                "⚠️ **In-sample result:** the model was evaluated on the same data it was trained on. "
+                "This accuracy measures memorisation, not generalisation. "
+                "Enable 'Split into train/test sets' above for an unbiased estimate."
+            )
 
     def render_classification_report(clf_name, y_true, y_pred, classes):
         """Formatted classification report table."""
@@ -1274,19 +1318,18 @@ else:
                                    if (split_data and test_size is not None) else "No split — full dataset for train and eval")
             )
         y_pred_da = best_da.predict(X_test)
-        acc_da    = accuracy_score(y_test_enc, y_pred_da)
         st.subheader(f"{da_type} Confusion Matrix{title_suffix}")
         cm_da = confusion_matrix(y_test_enc, y_pred_da)
         fig_cm = px.imshow(cm_da, text_auto=True, x=list(unique_y), y=list(unique_y),
                             color_continuous_scale='Blues',
-                            title=f"{da_type} Confusion Matrix{title_suffix}")
+                            title=f"{da_type} Confusion Matrix — {'Test Set' if split_data else 'In-Sample (No Split)'}{title_suffix}")
         st.plotly_chart(fig_cm, use_container_width=True)
-        st.write(f"**Accuracy at {n_pcs_for_classification} {component_label}s:** {acc_da:.3f}")
+        show_train_test_accuracy(da_type, best_da, X_train, X_test, y_train_enc, y_test_enc, split_data)
 
         st.subheader(f"{da_type} Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification})")
-        if da_type=="LDA": cf = lambda: LDA()
-        elif da_type=="QDA": cf = lambda: QDA(reg_param=0.001)
-        else: cf = lambda: GaussianNB()
+        if da_type=="LDA":   cf = lambda: LDA()
+        elif da_type=="QDA": cf = lambda rp=0.001: QDA(reg_param=rp)
+        else:                cf = lambda: GaussianNB()
         fig_sw, sw_sum = accuracy_vs_pcs_plot(cf, da_type, X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification)
         if fig_sw: st.plotly_chart(fig_sw, use_container_width=True); st.info(sw_sum)
         else: st.warning(sw_sum)
@@ -1334,17 +1377,18 @@ else:
                                    if (split_data and test_size is not None) else "No split")
             )
         y_pred_knn = best_knn.predict(X_test)
-        acc_knn    = accuracy_score(y_test_enc, y_pred_knn)
         st.subheader(f"KNN Confusion Matrix{title_suffix}")
         cm_knn = confusion_matrix(y_test_enc, y_pred_knn)
         fig_ck = px.imshow(cm_knn, text_auto=True, x=list(unique_y), y=list(unique_y),
-                            color_continuous_scale='Blues', title=f"KNN Confusion Matrix{title_suffix}")
+                            color_continuous_scale='Blues',
+                            title=f"KNN Confusion Matrix — {'Test Set' if split_data else 'In-Sample (No Split)'}{title_suffix}")
         st.plotly_chart(fig_ck, use_container_width=True)
-        st.write(f"**Accuracy at {n_pcs_for_classification} {component_label}s:** {acc_knn:.3f}")
+        show_train_test_accuracy(f"KNN (k={k_safe})", best_knn, X_train, X_test, y_train_enc, y_test_enc, split_data)
 
         st.subheader(f"KNN Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification}, k={k_safe})")
+        # Use default-argument capture to avoid Python closure bug with k_safe
         fig_ksw, ksw_sum = accuracy_vs_pcs_plot(
-            lambda: KNeighborsClassifier(n_neighbors=k_safe), f"KNN (k={k_safe})",
+            lambda k=k_safe: KNeighborsClassifier(n_neighbors=k), f"KNN (k={k_safe})",
             X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification)
         if fig_ksw: st.plotly_chart(fig_ksw, use_container_width=True); st.info(ksw_sum)
         else: st.warning(ksw_sum)
@@ -1399,21 +1443,20 @@ else:
             )
 
         y_pred_dt = best_dt.predict(X_test)
-        acc_dt    = accuracy_score(y_test_enc, y_pred_dt)
 
         st.subheader(f"Decision Tree Confusion Matrix{title_suffix}")
         cm_dt = confusion_matrix(y_test_enc, y_pred_dt)
         fig_cm_dt = px.imshow(cm_dt, text_auto=True, x=list(unique_y), y=list(unique_y),
                                color_continuous_scale='Blues',
-                               title=f"Decision Tree Confusion Matrix{title_suffix}")
+                               title=f"Decision Tree Confusion Matrix — {'Test Set' if split_data else 'In-Sample (No Split)'}{title_suffix}")
         st.plotly_chart(fig_cm_dt, use_container_width=True)
-        st.write(f"**Accuracy at {n_pcs_for_classification} {component_label}s:** {acc_dt:.3f}")
+        show_train_test_accuracy(f"Decision Tree (depth={dt_max_depth})", best_dt, X_train, X_test, y_train_enc, y_test_enc, split_data)
 
-        # Accuracy vs PCs sweep
+        # Accuracy vs PCs sweep — use default-arg capture to avoid closure bug
         st.subheader(f"Decision Tree Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification})")
         fig_dtsw, dtsw_sum = accuracy_vs_pcs_plot(
-            lambda: DecisionTreeClassifier(max_depth=dt_max_depth, criterion=dt_criterion,
-                                           min_samples_leaf=dt_min_samples, random_state=42),
+            lambda md=dt_max_depth, cr=dt_criterion, ms=dt_min_samples: DecisionTreeClassifier(
+                max_depth=md, criterion=cr, min_samples_leaf=ms, random_state=42),
             f"Decision Tree (depth={dt_max_depth})",
             X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification
         )
