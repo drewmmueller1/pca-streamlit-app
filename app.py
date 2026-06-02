@@ -1573,26 +1573,31 @@ else:
 
     # ── KNN ───────────────────────────────────────────────────────────────────
     if run_knn:
-        n_train = X_train.shape[0]
-        if n_train == 0:
-            st.error("KNN cannot run: training set is empty. Uncheck 'Split into train/test sets' or choose a smaller test size.")
-        else:
-            # Cap k at training set size, minimum 1
-            k_safe = max(1, min(k, n_train))
-            if k_safe < k:
-                st.warning(
-                    f"K was reduced from {k} to {k_safe} because the training set only has "
-                    f"{n_train} samples. Increase training data or reduce K in the sidebar."
-                )
+        # Ensure k never exceeds number of training samples (minimum 1)
+        n_train_knn = len(y_train_enc)
+        k_safe = max(1, min(k, n_train_knn))
+        if k_safe < k:
+            st.warning(
+                f"K was reduced from {k} to {k_safe} — training set has only {n_train_knn} samples."
+            )
+
+        try:
             best_knn = KNeighborsClassifier(n_neighbors=k_safe)
             best_knn.fit(X_train, y_train_enc)
+        except Exception as e:
+            st.error(f"KNN failed to fit: {e}")
+            best_knn = None
+
+        if best_knn is not None:
             with st.expander("📋 KNN Model Details", expanded=True):
-                st.markdown(f"**K-Nearest Neighbors:** classifies each sample by majority vote among its **{k_safe} nearest "
-                            f"neighbors** in {component_label} space (Euclidean distance). No explicit training — the model "
-                            "memorizes the training set and searches at prediction time.")
+                st.markdown(
+                    f"**K-Nearest Neighbors:** classifies each sample by majority vote among its "
+                    f"**{k_safe} nearest neighbors** in {component_label} space (Euclidean distance). "
+                    "No explicit training — the model memorizes the training set and searches at prediction time."
+                )
                 st.markdown(f"**Parameters:** `n_neighbors`=`{k_safe}`, `metric`=`minkowski(p=2)`, `weights`=`uniform`, `algorithm`=`auto`")
                 st.markdown(
-                    f"**Input:** {X_train.shape[0]} training samples × {n_pcs_for_classification} {component_label}s  \n"
+                    f"**Input:** {n_train_knn} training samples × {n_pcs_for_classification} {component_label}s  \n"
                     f"**Classes:** {list(unique_y)}  \n"
                     f"**Split:** " + (f"Yes — {int((1-test_size)*100)}% / {int(test_size*100)}%"
                                        if (split_data and test_size is not None) else "No split")
@@ -1606,14 +1611,18 @@ else:
             apply_white_theme(fig_ck)
             st.plotly_chart(fig_ck, use_container_width=True)
             show_train_test_accuracy(f"KNN (k={k_safe})", best_knn, X_train, X_test, y_train_enc, y_test_enc, split_data)
-    
+
             st.subheader(f"KNN Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification}, k={k_safe})")
             fig_ksw, ksw_sum = accuracy_vs_pcs_plot(
                 lambda k=k_safe: KNeighborsClassifier(n_neighbors=k), f"KNN (k={k_safe})",
                 X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification)
-            if fig_ksw: apply_white_theme(fig_ksw); st.plotly_chart(fig_ksw, use_container_width=True); st.info(ksw_sum)
-            else: st.warning(ksw_sum)
-    
+            if fig_ksw:
+                apply_white_theme(fig_ksw)
+                st.plotly_chart(fig_ksw, use_container_width=True)
+                st.info(ksw_sum)
+            else:
+                st.warning(ksw_sum)
+
             if n_pcs_for_classification == 2:
                 st.subheader(f"KNN Decision Boundary{title_suffix}")
                 render_decision_boundary(
@@ -1623,13 +1632,10 @@ else:
                 )
             else:
                 st.info(f"Decision boundary only for exactly 2 {component_label}s (currently {n_pcs_for_classification}).")
-    
-            # ── Formal visuals ─────────────────────────────────────────────────────
+
             render_classification_report(f"KNN (k={k_safe})", y_test_enc, y_pred_knn, unique_y)
-    
             render_roc_curve(f"KNN (k={k_safe})", best_knn, X_train, X_test,
                               y_train_enc, y_test_enc, unique_y, has_proba=True)
-    
     # ── DECISION TREE ─────────────────────────────────────────────────────────
     if run_dt:
         best_dt = DecisionTreeClassifier(
