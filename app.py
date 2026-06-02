@@ -1151,6 +1151,91 @@ else:
                 "Enable 'Split into train/test sets' above for an unbiased estimate."
             )
 
+    def render_decision_boundary(clf_name, clf, X_2d, y_enc, unique_classes,
+                                  cx_label, cy_label, title_suffix, separate_legend):
+        """
+        Plotly decision boundary plot with:
+        - Actual class label names in the legend (not numeric codes)
+        - Custom color map respected for both regions and points
+        - Separate-legend toggle support
+        Uses a mesh grid: predicts the class at every point, fills regions as a
+        heatmap background, then overlays the actual labelled data points.
+        """
+        x_min, x_max = X_2d[:, 0].min(), X_2d[:, 0].max()
+        y_min, y_max = X_2d[:, 1].min(), X_2d[:, 1].max()
+        pad_x = (x_max - x_min) * 0.10
+        pad_y = (y_max - y_min) * 0.10
+        res   = 200
+        xx, yy = np.meshgrid(
+            np.linspace(x_min - pad_x, x_max + pad_x, res),
+            np.linspace(y_min - pad_y, y_max + pad_y, res)
+        )
+        try:
+            Z = clf.predict(np.c_[xx.ravel(), yy.ravel()]).reshape(xx.shape)
+        except Exception as e:
+            st.warning(f"Decision boundary mesh prediction failed: {e}")
+            return
+
+        n_classes = len(unique_classes)
+        # Build a discrete Plotly colorscale: each encoded int maps to its hex color
+        colorscale = []
+        for i, cls in enumerate(unique_classes):
+            hex_c = color_map_hex.get(str(cls), DEFAULT_COLORS[i % len(DEFAULT_COLORS)])
+            lo = i / n_classes
+            hi = (i + 1) / n_classes
+            colorscale.append([lo, hex_c])
+            colorscale.append([hi, hex_c])
+
+        fig_db = go.Figure()
+
+        # Filled decision regions
+        fig_db.add_trace(go.Heatmap(
+            x=xx[0], y=yy[:, 0], z=Z,
+            colorscale=colorscale, zmin=0, zmax=n_classes - 1,
+            showscale=False, opacity=0.30,
+            hoverinfo='skip', name='Decision region'
+        ))
+
+        # Data points with actual label names
+        for i, cls in enumerate(unique_classes):
+            mask  = (y_enc == i)
+            hex_c = color_map_hex.get(str(cls), DEFAULT_COLORS[i % len(DEFAULT_COLORS)])
+            fig_db.add_trace(go.Scatter(
+                x=X_2d[mask, 0], y=X_2d[mask, 1],
+                mode='markers',
+                marker=dict(color=hex_c, size=9, line=dict(color='white', width=0.8)),
+                name=str(cls),
+                showlegend=not separate_legend
+            ))
+
+        fig_db.update_layout(
+            title=f"{clf_name} Decision Boundary{title_suffix}",
+            xaxis_title=cx_label, yaxis_title=cy_label,
+            height=520,
+            legend=dict(
+                orientation='v', x=1.02, y=1, xanchor='left', yanchor='top',
+                bgcolor='rgba(255,255,255,0.85)',
+                bordercolor='lightgray', borderwidth=1
+            ) if not separate_legend else dict(visible=False),
+        )
+        st.plotly_chart(fig_db, use_container_width=True)
+
+        if separate_legend:
+            fig_leg = go.Figure()
+            for i, cls in enumerate(unique_classes):
+                hex_c = color_map_hex.get(str(cls), DEFAULT_COLORS[i % len(DEFAULT_COLORS)])
+                fig_leg.add_trace(go.Scatter(
+                    x=[None], y=[None], mode='markers',
+                    marker=dict(color=hex_c, size=10),
+                    name=str(cls), showlegend=True
+                ))
+            fig_leg.update_layout(
+                height=max(80, n_classes * 30 + 40),
+                margin=dict(l=0, r=0, t=10, b=10),
+                legend=dict(orientation='v', x=0, y=1)
+            )
+            st.plotly_chart(fig_leg, use_container_width=True)
+
     def render_classification_report(clf_name, y_true, y_pred, classes):
         """Formatted classification report table."""
         st.subheader(f"{clf_name} — Classification Report")
@@ -1336,15 +1421,11 @@ else:
 
         if n_pcs_for_classification == 2:
             st.subheader(f"{da_type} Decision Boundary{title_suffix}")
-            try:
-                from mlxtend.plotting import plot_decision_regions
-                fig_db, ax_db = plt.subplots(figsize=(8,6))
-                plot_decision_regions(X_class, y_encoded, clf=best_da, legend=2, ax=ax_db)
-                ax_db.set_xlabel(f"{component_label}1"); ax_db.set_ylabel(f"{component_label}2")
-                ax_db.set_title(f"{da_type} Decision Boundary{title_suffix}")
-                st.pyplot(fig_db); plt.close(fig_db)
-            except Exception as e:
-                st.warning(f"Decision boundary plot failed: {e}")
+            render_decision_boundary(
+                da_type, best_da, X_class[:, :2], y_encoded, unique_y,
+                f"{component_label}1", f"{component_label}2",
+                title_suffix, legend_separate
+            )
         else:
             st.info(f"Decision boundary only for exactly 2 {component_label}s (currently {n_pcs_for_classification}).")
 
@@ -1395,15 +1476,11 @@ else:
 
         if n_pcs_for_classification == 2:
             st.subheader(f"KNN Decision Boundary{title_suffix}")
-            try:
-                from mlxtend.plotting import plot_decision_regions
-                fig_kdb, ax_kdb = plt.subplots(figsize=(8,6))
-                plot_decision_regions(X_class, y_encoded, clf=best_knn, legend=2, ax=ax_kdb)
-                ax_kdb.set_xlabel(f"{component_label}1"); ax_kdb.set_ylabel(f"{component_label}2")
-                ax_kdb.set_title(f"KNN Decision Boundary{title_suffix}")
-                st.pyplot(fig_kdb); plt.close(fig_kdb)
-            except Exception as e:
-                st.warning(f"KNN decision boundary failed: {e}")
+            render_decision_boundary(
+                f"KNN (k={k_safe})", best_knn, X_class[:, :2], y_encoded, unique_y,
+                f"{component_label}1", f"{component_label}2",
+                title_suffix, legend_separate
+            )
         else:
             st.info(f"Decision boundary only for exactly 2 {component_label}s (currently {n_pcs_for_classification}).")
 
@@ -1469,15 +1546,11 @@ else:
         # Decision boundary (2 components only)
         if n_pcs_for_classification == 2:
             st.subheader(f"Decision Tree Decision Boundary{title_suffix}")
-            try:
-                from mlxtend.plotting import plot_decision_regions
-                fig_dtdb, ax_dtdb = plt.subplots(figsize=(8, 6))
-                plot_decision_regions(X_class, y_encoded, clf=best_dt, legend=2, ax=ax_dtdb)
-                ax_dtdb.set_xlabel(f"{component_label}1"); ax_dtdb.set_ylabel(f"{component_label}2")
-                ax_dtdb.set_title(f"Decision Tree Boundary{title_suffix} (depth={dt_max_depth})")
-                st.pyplot(fig_dtdb); plt.close(fig_dtdb)
-            except Exception as e:
-                st.warning(f"Decision boundary plot failed: {e}")
+            render_decision_boundary(
+                f"Decision Tree (depth={dt_max_depth})", best_dt, X_class[:, :2], y_encoded, unique_y,
+                f"{component_label}1", f"{component_label}2",
+                title_suffix, legend_separate
+            )
         else:
             st.info(f"Decision boundary only available for exactly 2 {component_label}s (currently {n_pcs_for_classification}).")
 
