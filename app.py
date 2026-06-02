@@ -8,7 +8,7 @@ from sklearn.cluster import KMeans
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis as QDA
 from sklearn.naive_bayes import GaussianNB
-from sklearn.tree import DecisionTreeClassifier, export_text, plot_tree
+from sklearn.tree import DecisionTreeClassifier, plot_tree
 from sklearn.model_selection import train_test_split, cross_val_score, KFold
 from sklearn.metrics import (confusion_matrix, accuracy_score, silhouette_score,
                              mean_squared_error, classification_report,
@@ -990,10 +990,70 @@ else:
 
     split_data = st.checkbox("Split into train/test sets")
     if split_data:
-        test_size = st.slider("Test size", 0.1, 0.5, 0.2)
-        X_train, X_test, y_train_enc, y_test_enc = train_test_split(
-            X_class, y_encoded, test_size=test_size, random_state=42, stratify=y_encoded)
+        # ── Split advisor ─────────────────────────────────────────────────────
+        # For stratified splitting, every class needs at least 1 sample in test
+        # and 1 in train, so the valid test fractions are constrained by class sizes.
+        n_total   = len(y_encoded)
+        class_counts = np.bincount(y_encoded)
+        min_class_n  = int(class_counts.min())
+        n_classes_n  = len(class_counts)
+
+        # A test fraction f is valid when floor(min_class_n * f) >= 1
+        # i.e. f >= 1/min_class_n, AND floor(min_class_n * (1-f)) >= 1
+        # i.e. f <= 1 - 1/min_class_n
+        # Generate the discrete valid fractions: test_n = 1, 2, … min_class_n-1
+        valid_test_sizes = []
+        for test_n in range(1, min_class_n):
+            frac = test_n / min_class_n
+            if 0.05 <= frac <= 0.60:
+                valid_test_sizes.append(round(frac, 4))
+
+        if not valid_test_sizes:
+            st.error(
+                f"Cannot split: the smallest class has only {min_class_n} sample(s). "
+                "You need at least 2 samples per class to split into train and test. "
+                "Either collect more data or uncheck 'Split into train/test sets'."
+            )
+            st.stop()
+
+        # Find the fraction closest to 20%
+        target     = 0.20
+        best_frac  = min(valid_test_sizes, key=lambda f: abs(f - target))
+        best_pct   = int(round(best_frac * 100))
+        train_pct  = 100 - best_pct
+
+        # Describe the replicate structure
+        replicate_note = ""
+        if min_class_n <= 10:
+            replicate_note = (
+                f" Your smallest class has **{min_class_n} samples**, so valid test sizes "
+                f"are multiples of 1/{min_class_n} of that class."
+            )
+
+        st.info(
+            f"**Split advisor:** with {n_total} total samples across {n_classes_n} classes "
+            f"(smallest class = {min_class_n} samples).{replicate_note}  \n"
+            f"**Recommended split:** {best_pct}% test / {train_pct}% train "
+            f"(closest valid split to 20%).  \n"
+            f"**All valid test sizes:** {', '.join([f'{int(round(f*100))}%' for f in valid_test_sizes])}"
+        )
+
+        test_size = st.select_slider(
+            "Test size",
+            options=valid_test_sizes,
+            value=best_frac,
+            format_func=lambda f: f"{int(round(f*100))}% test / {int(round((1-f)*100))}% train",
+            help="Only fractions that guarantee at least 1 sample per class in each split are shown."
+        )
+
+        try:
+            X_train, X_test, y_train_enc, y_test_enc = train_test_split(
+                X_class, y_encoded, test_size=test_size, random_state=42, stratify=y_encoded)
+        except ValueError as e:
+            st.error(f"Split failed: {e}. Try a different test size or uncheck the split option.")
+            st.stop()
     else:
+        test_size = None
         X_train, X_test, y_train_enc, y_test_enc = X_class, X_class, y_encoded, y_encoded
 
     def accuracy_vs_pcs_plot(clf_factory, label, X_full, y_enc, n_selected, n_scree_max):
@@ -1211,7 +1271,7 @@ else:
                 f"**Input:** {X_train.shape[0]} training samples × {n_pcs_for_classification} {component_label}s  \n"
                 f"**Classes:** {list(unique_y)}  \n"
                 f"**Split:** " + (f"Yes — {int((1-test_size)*100)}% train / {int(test_size*100)}% test"
-                                   if split_data else "No split — full dataset for train and eval")
+                                   if (split_data and test_size is not None) else "No split — full dataset for train and eval")
             )
         y_pred_da = best_da.predict(X_test)
         acc_da    = accuracy_score(y_test_enc, y_pred_da)
@@ -1253,18 +1313,25 @@ else:
 
     # ── KNN ───────────────────────────────────────────────────────────────────
     if run_knn:
-        best_knn = KNeighborsClassifier(n_neighbors=k)
+        # Cap k so it never exceeds the number of training samples
+        k_safe = min(k, X_train.shape[0])
+        if k_safe < k:
+            st.warning(
+                f"K was reduced from {k} to {k_safe} because the training set only has "
+                f"{X_train.shape[0]} samples. Increase training data or reduce K in the sidebar."
+            )
+        best_knn = KNeighborsClassifier(n_neighbors=k_safe)
         best_knn.fit(X_train, y_train_enc)
         with st.expander("📋 KNN Model Details", expanded=True):
-            st.markdown(f"**K-Nearest Neighbors:** classifies each sample by majority vote among its **{k} nearest "
+            st.markdown(f"**K-Nearest Neighbors:** classifies each sample by majority vote among its **{k_safe} nearest "
                         f"neighbors** in {component_label} space (Euclidean distance). No explicit training — the model "
                         "memorizes the training set and searches at prediction time.")
-            st.markdown(f"**Parameters:** `n_neighbors`=`{k}`, `metric`=`minkowski(p=2)`, `weights`=`uniform`, `algorithm`=`auto`")
+            st.markdown(f"**Parameters:** `n_neighbors`=`{k_safe}`, `metric`=`minkowski(p=2)`, `weights`=`uniform`, `algorithm`=`auto`")
             st.markdown(
                 f"**Input:** {X_train.shape[0]} training samples × {n_pcs_for_classification} {component_label}s  \n"
                 f"**Classes:** {list(unique_y)}  \n"
                 f"**Split:** " + (f"Yes — {int((1-test_size)*100)}% / {int(test_size*100)}%"
-                                   if split_data else "No split")
+                                   if (split_data and test_size is not None) else "No split")
             )
         y_pred_knn = best_knn.predict(X_test)
         acc_knn    = accuracy_score(y_test_enc, y_pred_knn)
@@ -1275,9 +1342,9 @@ else:
         st.plotly_chart(fig_ck, use_container_width=True)
         st.write(f"**Accuracy at {n_pcs_for_classification} {component_label}s:** {acc_knn:.3f}")
 
-        st.subheader(f"KNN Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification}, k={k})")
+        st.subheader(f"KNN Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification}, k={k_safe})")
         fig_ksw, ksw_sum = accuracy_vs_pcs_plot(
-            lambda: KNeighborsClassifier(n_neighbors=k), f"KNN (k={k})",
+            lambda: KNeighborsClassifier(n_neighbors=k_safe), f"KNN (k={k_safe})",
             X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification)
         if fig_ksw: st.plotly_chart(fig_ksw, use_container_width=True); st.info(ksw_sum)
         else: st.warning(ksw_sum)
@@ -1297,9 +1364,9 @@ else:
             st.info(f"Decision boundary only for exactly 2 {component_label}s (currently {n_pcs_for_classification}).")
 
         # ── Formal visuals ─────────────────────────────────────────────────────
-        render_classification_report(f"KNN (k={k})", y_test_enc, y_pred_knn, unique_y)
+        render_classification_report(f"KNN (k={k_safe})", y_test_enc, y_pred_knn, unique_y)
 
-        render_roc_curve(f"KNN (k={k})", best_knn, X_train, X_test,
+        render_roc_curve(f"KNN (k={k_safe})", best_knn, X_train, X_test,
                           y_train_enc, y_test_enc, unique_y, has_proba=True)
 
     # ── DECISION TREE ─────────────────────────────────────────────────────────
@@ -1328,7 +1395,7 @@ else:
                 f"**Input:** {X_train.shape[0]} training samples × {n_pcs_for_classification} {component_label}s  \n"
                 f"**Classes:** {list(unique_y)}  \n"
                 f"**Split:** " + (f"Yes — {int((1-test_size)*100)}% train / {int(test_size*100)}% test"
-                                   if split_data else "No split — full dataset for train and eval")
+                                   if (split_data and test_size is not None) else "No split — full dataset for train and eval")
             )
 
         y_pred_dt = best_dt.predict(X_test)
@@ -1389,14 +1456,6 @@ else:
         ax_tree.set_title(f"Decision Tree (depth={actual_depth}, criterion={dt_criterion})", fontsize=11)
         st.pyplot(fig_tree); plt.close(fig_tree)
 
-        # Text rules — easy to copy/share
-        st.subheader("Decision Rules (Text)")
-        tree_rules = export_text(
-            best_dt,
-            feature_names=[f"{component_label}{i+1}" for i in range(n_pcs_for_classification)]
-        )
-        st.code(tree_rules, language="text")
-
         # Feature importance bar chart
         st.subheader(f"Feature Importance ({component_label}s ranked by split contribution)")
         importances = best_dt.feature_importances_
@@ -1425,6 +1484,6 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 st.caption(
-    "v19 — Accuracy sweep bounded by selected PC count; ROC class multiselect; "
-    "probability heatmap removed (requires 2D grid, incompatible with N-PC models)."
+    "v20 — KNN k capped at training set size; smart train/test split advisor; "
+    "Decision Rules (Text) removed from Decision Tree."
 )
