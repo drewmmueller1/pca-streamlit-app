@@ -1744,6 +1744,6 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 st.caption(
-    "v20 — KNN k capped at training set size; smart train/test split advisor; "
-    "Decision Rules (Text) removed from Decision Tree."
+    "v25 — Publication mode toggle (after Label Config): white bg + black text when ON, browser theme when OFF. "
+    "DT diagram: value=[n] hidden, impurity retained. All matplotlib and Plotly figures respect toggle."
 )
