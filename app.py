@@ -35,6 +35,52 @@ DEFAULT_COLORS = [
     '#b3b3b3','#1b9e77','#d95f02','#7570b3','#e7298a',
 ]
 
+def apply_white_theme(fig):
+    """
+    Force a white background and black text on any Plotly figure so that
+    downloads are publication-ready regardless of the user's OS/browser theme.
+    """
+    fig.update_layout(
+        paper_bgcolor='white',
+        plot_bgcolor='white',
+        font=dict(color='black'),
+        xaxis=dict(
+            gridcolor='#e0e0e0',
+            zerolinecolor='#cccccc',
+            tickfont=dict(color='black'),
+            title_font=dict(color='black'),
+        ),
+        yaxis=dict(
+            gridcolor='#e0e0e0',
+            zerolinecolor='#cccccc',
+            tickfont=dict(color='black'),
+            title_font=dict(color='black'),
+        ),
+        legend=dict(
+            font=dict(color='black'),
+            bgcolor='rgba(255,255,255,0.9)',
+            bordercolor='#cccccc',
+        ),
+        title_font=dict(color='black'),
+        coloraxis_colorbar=dict(
+            tickfont=dict(color='black'),
+            title_font=dict(color='black'),
+        ),
+    )
+    # Also update any secondary axes (subplots use xaxis2, yaxis2, etc.)
+    for key in list(fig.layout):
+        if key.startswith('xaxis') or key.startswith('yaxis'):
+            try:
+                fig.layout[key].update(
+                    gridcolor='#e0e0e0',
+                    zerolinecolor='#cccccc',
+                    tickfont=dict(color='black'),
+                    title_font=dict(color='black'),
+                )
+            except Exception:
+                pass
+    return fig
+
 def diagnose_pca(X_pca, var_ratios):
     issues = []
     check_pcs = min(X_pca.shape[1], 5)
@@ -426,6 +472,7 @@ with st.expander(f"📋 {analysis_mode.split('(')[0].strip()} Pipeline Details",
         height=280, margin=dict(t=40,b=30,l=40,r=10),
         yaxis=dict(range=[0, var_ratios[0]*115])
     )
+    apply_white_theme(fig_sum)
     st.plotly_chart(fig_sum, use_container_width=True)
 
 # PCA Diagnostics
@@ -443,6 +490,7 @@ if pca_full is not None:
                 fig_diag.update_layout(title=f"{component_label}{issue['pc']} Score Distribution",
                                        xaxis_title="Score", yaxis_title="Count",
                                        height=250, margin=dict(t=35,b=30,l=30,r=10))
+                apply_white_theme(fig_diag)
                 st.plotly_chart(fig_diag, use_container_width=True)
 
 if n_total_pcs >= 2:
@@ -484,7 +532,7 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar.expander("Plot Options", expanded=False):
     show_2d         = st.checkbox("Show 2D Scores Plot (Static)", value=True)
-    legend_separate = st.checkbox("Separate legend figure", value=False)
+    legend_separate = st.checkbox("Separate legend figure (PCA plots)", value=False)
     show_3d         = st.checkbox("Show 3D Scores Plot (Interactive)", value=True)
     show_scree      = st.checkbox("Show Scree Plot", value=True)
     if show_scree:
@@ -494,6 +542,20 @@ with st.sidebar.expander("Plot Options", expanded=False):
     else:
         n_scree = n_total_pcs
         n_99_s  = n_total_pcs
+
+    db_legend_mode = st.radio(
+        "Decision Boundary legend",
+        ["Inside plot", "Separate figure", "No legend"],
+        index=0,
+        help=(
+            "**Inside plot:** legend is shown inside the interactive Plotly figure. "
+            "Click labels to toggle visibility.\n\n"
+            "**Separate figure:** legend rendered as a standalone figure below the plot — "
+            "useful when there are many labels.\n\n"
+            "**No legend:** legend is hidden entirely — best when you have large numbers of labels "
+            "that would otherwise truncate the plot."
+        )
+    )
 
     show_loadings = st.checkbox("Show Loadings / Weights Plot", value=True)
     if show_loadings:
@@ -626,6 +688,7 @@ if analysis_mode != "PCA (Principal Component Analysis)" and y_target is not Non
         fig_cv.update_layout(title="PCR: CV MSE vs. Number of PCs",
                               xaxis_title="Number of PCs", yaxis_title="CV MSE",
                               xaxis=dict(tickmode='linear',dtick=1), height=400)
+        apply_white_theme(fig_cv)
         st.plotly_chart(fig_cv, use_container_width=True)
 
         from sklearn.linear_model import LinearRegression
@@ -661,6 +724,7 @@ if analysis_mode != "PCA (Principal Component Analysis)" and y_target is not Non
         fig_cv_pls.update_layout(title="PLS: CV MSE vs. Number of Latent Variables",
                                   xaxis_title="Number of LVs", yaxis_title="CV MSE",
                                   xaxis=dict(tickmode='linear',dtick=1), height=400)
+        apply_white_theme(fig_cv_pls)
         st.plotly_chart(fig_cv_pls, use_container_width=True)
 
         y_pred   = pls_model.predict(X_scaled).ravel()
@@ -680,6 +744,7 @@ if analysis_mode != "PCA (Principal Component Analysis)" and y_target is not Non
                                   mode='lines', line=dict(dash='dash',color='gray'),
                                   name='1:1 line', showlegend=True))
     fig_pva.update_layout(height=450)
+    apply_white_theme(fig_pva)
     st.plotly_chart(fig_pva, use_container_width=True)
 
     # Residuals
@@ -692,6 +757,7 @@ if analysis_mode != "PCA (Principal Component Analysis)" and y_target is not Non
                             labels={'Predicted':'Predicted Y','Residual':'Residual (Actual − Predicted)'})
     fig_res.add_hline(y=0, line_dash='dash', line_color='gray')
     fig_res.update_layout(height=420)
+    apply_white_theme(fig_res)
     st.plotly_chart(fig_res, use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -706,25 +772,38 @@ if show_2d and n_total_pcs >= 2:
     mpl_colors = [plot_color_map.get(l, DEFAULT_COLORS[i%len(DEFAULT_COLORS)]) for i,l in enumerate(ul2d)]
     if legend_separate:
         fig_m, ax_m = plt.subplots(figsize=(8,6))
+        fig_m.patch.set_facecolor('white'); ax_m.set_facecolor('white')
         for lbl, col in zip(ul2d, mpl_colors):
             m = df_2d['label']==lbl
             ax_m.scatter(df_2d[m][cx_2d], df_2d[m][cy_2d], c=col, label=lbl, s=50)
-        ax_m.set_xlabel(f"{cx_2d} ({xvar:.1%})"); ax_m.set_ylabel(f"{cy_2d} ({yvar:.1%})")
-        ax_m.set_title(f"2D {component_label} Scores"); ax_m.grid(True,alpha=0.3)
-        st.pyplot(fig_m); plt.close(fig_m)
+        ax_m.set_xlabel(f"{cx_2d} ({xvar:.1%})", color='black')
+        ax_m.set_ylabel(f"{cy_2d} ({yvar:.1%})", color='black')
+        ax_m.set_title(f"2D {component_label} Scores", color='black')
+        ax_m.tick_params(colors='black'); ax_m.grid(True, alpha=0.3, color='#cccccc')
+        for sp in ax_m.spines.values(): sp.set_edgecolor('#cccccc')
+        st.pyplot(fig_m, bbox_inches='tight'); plt.close(fig_m)
         fig_lg, ax_lg = plt.subplots(figsize=(2, len(ul2d)*0.5))
+        fig_lg.patch.set_facecolor('white'); ax_lg.set_facecolor('white')
         ax_lg.axis('off')
         handles = [plt.Line2D([0],[0],marker='o',color='w',markerfacecolor=c,markersize=8,label=l)
                    for l,c in zip(ul2d,mpl_colors)]
-        ax_lg.legend(handles=handles,loc='center'); st.pyplot(fig_lg); plt.close(fig_lg)
+        leg = ax_lg.legend(handles=handles, loc='center')
+        for txt in leg.get_texts(): txt.set_color('black')
+        st.pyplot(fig_lg, bbox_inches='tight'); plt.close(fig_lg)
     else:
         fig, ax = plt.subplots(figsize=(10,6))
+        fig.patch.set_facecolor('white'); ax.set_facecolor('white')
         for lbl, col in zip(ul2d, mpl_colors):
             m = df_2d['label']==lbl
             ax.scatter(df_2d[m][cx_2d], df_2d[m][cy_2d], c=col, label=lbl, s=50)
-        ax.set_xlabel(f"{cx_2d} ({xvar:.1%})"); ax.set_ylabel(f"{cy_2d} ({yvar:.1%})")
-        ax.set_title(f"2D {component_label} Scores Plot"); ax.legend(); ax.grid(True,alpha=0.3)
-        st.pyplot(fig); plt.close(fig)
+        ax.set_xlabel(f"{cx_2d} ({xvar:.1%})", color='black')
+        ax.set_ylabel(f"{cy_2d} ({yvar:.1%})", color='black')
+        ax.set_title(f"2D {component_label} Scores Plot", color='black')
+        ax.tick_params(colors='black'); ax.grid(True, alpha=0.3, color='#cccccc')
+        for sp in ax.spines.values(): sp.set_edgecolor('#cccccc')
+        leg = ax.legend()
+        for txt in leg.get_texts(): txt.set_color('black')
+        st.pyplot(fig, bbox_inches='tight'); plt.close(fig)
 elif show_2d:
     st.warning("Need at least 2 components for 2D plot.")
 
@@ -747,6 +826,7 @@ if show_3d and n_total_pcs >= 3:
             scene=dict(xaxis_title=f"{component_label}1 ({var_ratios[0]:.1%})",
                        yaxis_title=f"{component_label}2 ({var_ratios[1]:.1%})",
                        zaxis_title=f"{component_label}3 ({var_ratios[2]:.1%})"))
+    apply_white_theme(fig_3d)
     st.plotly_chart(fig_3d, use_container_width=True)
 elif show_3d:
     st.warning("Need at least 3 components for 3D plot.")
@@ -770,6 +850,7 @@ if show_scree:
         xaxis_title="Component", yaxis_title="% Variance Explained",
         yaxis=dict(range=[0, var_pct.max()*1.15])
     )
+    apply_white_theme(fig_scree)
     st.plotly_chart(fig_scree, use_container_width=True)
     st.info(f"Shown: {np.sum(var_ratios[:n_scree]):.1%} | ≥99% at {component_label}{n_99_s}")
 
@@ -826,6 +907,7 @@ if show_loadings:
                 fg = px.line(melt, x='Variable', y='Loading', color='Component', markers=False,
                              title=f"{loadings_title_suffix}: Connected Line (Abs, Top 3 {component_label}s)")
                 fg.update_traces(line=dict(width=2)); fg.update_xaxes(tickangle=45, tickfont=dict(size=9))
+            apply_white_theme(fg)
             st.plotly_chart(fg, use_container_width=True)
             st.subheader(f"{loadings_title_suffix} Table (Top 3 {component_label}s)")
             st.dataframe(loadings_matrix.iloc[valid_idx])
@@ -856,6 +938,7 @@ if show_loadings:
                 fg2.update_layout(title=f"{loadings_title_suffix}: {component_label}{sel_comp_num} (Abs, Line)",
                                    xaxis_title="Variables", yaxis_title="Magnitude", height=400)
                 fg2.update_xaxes(tickangle=45, tickfont=dict(size=9))
+            apply_white_theme(fg2)
             st.plotly_chart(fg2, use_container_width=True)
             st.subheader(f"{loadings_title_suffix} Table — {component_label}{sel_comp_num}")
             st.dataframe(lrow.to_frame(name=f"{component_label}{sel_comp_num}"))
@@ -941,6 +1024,7 @@ if run_kmeans and X_scores_2d_global is not None:
     fig_cl = px.scatter(df_cl, x=f"{component_label}1", y=f"{component_label}2", color='cluster',
                          title=f"K-Means (k={n_clusters}) on {component_label}1 vs {component_label}2",
                          color_discrete_sequence=px.colors.qualitative.Set1)
+    apply_white_theme(fig_cl)
     st.plotly_chart(fig_cl, use_container_width=True)
     if show_elbow:
         inertias = [KMeans(n_clusters=ki,random_state=42,n_init=10).fit(X_scores_2d_global).inertia_ for ki in range(1,11)]
@@ -957,6 +1041,7 @@ if run_kmeans and X_scores_2d_global is not None:
         df_cen['cluster'] = range(n_clusters)
         fg_pr = px.bar(df_cen.melt(id_vars='cluster'), x='cluster', y='value',
                         color='variable', barmode='group', title="Cluster Centroids")
+        apply_white_theme(fg_pr)
         st.plotly_chart(fg_pr)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1152,14 +1237,13 @@ else:
             )
 
     def render_decision_boundary(clf_name, clf, X_2d, y_enc, unique_classes,
-                                  cx_label, cy_label, title_suffix, separate_legend):
+                                  cx_label, cy_label, title_suffix, legend_mode):
         """
-        Plotly decision boundary plot with:
-        - Actual class label names in the legend (not numeric codes)
-        - Custom color map respected for both regions and points
-        - Separate-legend toggle support
-        Uses a mesh grid: predicts the class at every point, fills regions as a
-        heatmap background, then overlays the actual labelled data points.
+        Plotly decision boundary plot.
+        legend_mode: "Inside plot" | "Separate figure" | "No legend"
+        - Real class label names in legend (not numeric codes)
+        - Custom color map for regions and points
+        - Text visibility fixed (dark font on transparent bg, not white-on-white)
         """
         x_min, x_max = X_2d[:, 0].min(), X_2d[:, 0].max()
         y_min, y_max = X_2d[:, 1].min(), X_2d[:, 1].max()
@@ -1176,8 +1260,8 @@ else:
             st.warning(f"Decision boundary mesh prediction failed: {e}")
             return
 
-        n_classes = len(unique_classes)
-        # Build a discrete Plotly colorscale: each encoded int maps to its hex color
+        n_classes  = len(unique_classes)
+        # Build discrete colorscale: each encoded int → its hex color
         colorscale = []
         for i, cls in enumerate(unique_classes):
             hex_c = color_map_hex.get(str(cls), DEFAULT_COLORS[i % len(DEFAULT_COLORS)])
@@ -1186,6 +1270,7 @@ else:
             colorscale.append([lo, hex_c])
             colorscale.append([hi, hex_c])
 
+        show_inline = (legend_mode == "Inside plot")
         fig_db = go.Figure()
 
         # Filled decision regions
@@ -1205,22 +1290,31 @@ else:
                 mode='markers',
                 marker=dict(color=hex_c, size=9, line=dict(color='white', width=0.8)),
                 name=str(cls),
-                showlegend=not separate_legend
+                showlegend=show_inline
             ))
+
+        legend_cfg = dict(
+            orientation='v',
+            x=1.02, y=1,
+            xanchor='left', yanchor='top',
+            # Transparent background so Plotly uses the theme background — avoids white-on-white
+            bgcolor='rgba(0,0,0,0)',
+            bordercolor='rgba(150,150,150,0.5)',
+            borderwidth=1,
+            # Explicit dark font so text is always readable regardless of theme
+            font=dict(color='#222222', size=12),
+        ) if show_inline else dict(visible=False)
 
         fig_db.update_layout(
             title=f"{clf_name} Decision Boundary{title_suffix}",
             xaxis_title=cx_label, yaxis_title=cy_label,
             height=520,
-            legend=dict(
-                orientation='v', x=1.02, y=1, xanchor='left', yanchor='top',
-                bgcolor='rgba(255,255,255,0.85)',
-                bordercolor='lightgray', borderwidth=1
-            ) if not separate_legend else dict(visible=False),
+            legend=legend_cfg,
         )
+        apply_white_theme(fig_db)
         st.plotly_chart(fig_db, use_container_width=True)
 
-        if separate_legend:
+        if legend_mode == "Separate figure":
             fig_leg = go.Figure()
             for i, cls in enumerate(unique_classes):
                 hex_c = color_map_hex.get(str(cls), DEFAULT_COLORS[i % len(DEFAULT_COLORS)])
@@ -1232,8 +1326,13 @@ else:
             fig_leg.update_layout(
                 height=max(80, n_classes * 30 + 40),
                 margin=dict(l=0, r=0, t=10, b=10),
-                legend=dict(orientation='v', x=0, y=1)
+                legend=dict(
+                    orientation='v', x=0, y=1,
+                    font=dict(color='#222222', size=12),
+                    bgcolor='rgba(0,0,0,0)',
+                )
             )
+            apply_white_theme(fig_leg)
             st.plotly_chart(fig_leg, use_container_width=True)
 
     def render_classification_report(clf_name, y_true, y_pred, classes):
@@ -1305,6 +1404,7 @@ else:
                     xaxis=dict(range=[0,1]), yaxis=dict(range=[0,1.02]),
                     height=460, legend=dict(x=0.55, y=0.05)
                 )
+                apply_white_theme(fig_roc)
                 st.plotly_chart(fig_roc, use_container_width=True)
                 st.caption(f"**AUC = {roc_auc_val:.3f}** | 1.0 = perfect classifier, 0.5 = random.")
 
@@ -1361,6 +1461,7 @@ else:
                     xaxis=dict(range=[0,1]), yaxis=dict(range=[0,1.02]),
                     height=460, legend=dict(x=0.55, y=0.05)
                 )
+                apply_white_theme(fig_roc)
                 st.plotly_chart(fig_roc, use_container_width=True)
                 all_aucs = [v[2] for v in computed.values()]
                 st.caption(
@@ -1408,6 +1509,7 @@ else:
         fig_cm = px.imshow(cm_da, text_auto=True, x=list(unique_y), y=list(unique_y),
                             color_continuous_scale='Blues',
                             title=f"{da_type} Confusion Matrix — {'Test Set' if split_data else 'In-Sample (No Split)'}{title_suffix}")
+        apply_white_theme(fig_cm)
         st.plotly_chart(fig_cm, use_container_width=True)
         show_train_test_accuracy(da_type, best_da, X_train, X_test, y_train_enc, y_test_enc, split_data)
 
@@ -1424,7 +1526,7 @@ else:
             render_decision_boundary(
                 da_type, best_da, X_class[:, :2], y_encoded, unique_y,
                 f"{component_label}1", f"{component_label}2",
-                title_suffix, legend_separate
+                title_suffix, db_legend_mode
             )
         else:
             st.info(f"Decision boundary only for exactly 2 {component_label}s (currently {n_pcs_for_classification}).")
@@ -1463,6 +1565,7 @@ else:
         fig_ck = px.imshow(cm_knn, text_auto=True, x=list(unique_y), y=list(unique_y),
                             color_continuous_scale='Blues',
                             title=f"KNN Confusion Matrix — {'Test Set' if split_data else 'In-Sample (No Split)'}{title_suffix}")
+        apply_white_theme(fig_ck)
         st.plotly_chart(fig_ck, use_container_width=True)
         show_train_test_accuracy(f"KNN (k={k_safe})", best_knn, X_train, X_test, y_train_enc, y_test_enc, split_data)
 
@@ -1479,7 +1582,7 @@ else:
             render_decision_boundary(
                 f"KNN (k={k_safe})", best_knn, X_class[:, :2], y_encoded, unique_y,
                 f"{component_label}1", f"{component_label}2",
-                title_suffix, legend_separate
+                title_suffix, db_legend_mode
             )
         else:
             st.info(f"Decision boundary only for exactly 2 {component_label}s (currently {n_pcs_for_classification}).")
@@ -1526,6 +1629,7 @@ else:
         fig_cm_dt = px.imshow(cm_dt, text_auto=True, x=list(unique_y), y=list(unique_y),
                                color_continuous_scale='Blues',
                                title=f"Decision Tree Confusion Matrix — {'Test Set' if split_data else 'In-Sample (No Split)'}{title_suffix}")
+        apply_white_theme(fig_cm_dt)
         st.plotly_chart(fig_cm_dt, use_container_width=True)
         show_train_test_accuracy(f"Decision Tree (depth={dt_max_depth})", best_dt, X_train, X_test, y_train_enc, y_test_enc, split_data)
 
@@ -1538,6 +1642,7 @@ else:
             X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification
         )
         if fig_dtsw:
+            apply_white_theme(fig_dtsw)
             st.plotly_chart(fig_dtsw, use_container_width=True)
             st.info(dtsw_sum)
         else:
@@ -1549,7 +1654,7 @@ else:
             render_decision_boundary(
                 f"Decision Tree (depth={dt_max_depth})", best_dt, X_class[:, :2], y_encoded, unique_y,
                 f"{component_label}1", f"{component_label}2",
-                title_suffix, legend_separate
+                title_suffix, db_legend_mode
             )
         else:
             st.info(f"Decision boundary only available for exactly 2 {component_label}s (currently {n_pcs_for_classification}).")
@@ -1561,16 +1666,19 @@ else:
         st.caption(f"Actual depth: {actual_depth} | Leaves: {n_leaves} | "
                    f"Features used: {best_dt.n_features_in_} {component_label}s")
 
-        # Visual tree diagram
+        # Visual tree diagram — white background, no impurity values
         fig_tree, ax_tree = plt.subplots(figsize=(max(10, n_leaves * 1.5), max(5, actual_depth * 2)))
+        fig_tree.patch.set_facecolor('white')
+        ax_tree.set_facecolor('white')
         plot_tree(
             best_dt,
             feature_names=[f"{component_label}{i+1}" for i in range(n_pcs_for_classification)],
             class_names=[str(c) for c in unique_y],
-            filled=True, rounded=True, fontsize=9, ax=ax_tree
+            filled=True, rounded=True, fontsize=9, ax=ax_tree,
+            impurity=False,     # hide the Gini/entropy value from each node
         )
-        ax_tree.set_title(f"Decision Tree (depth={actual_depth}, criterion={dt_criterion})", fontsize=11)
-        st.pyplot(fig_tree); plt.close(fig_tree)
+        ax_tree.set_title(f"Decision Tree (depth={actual_depth}, criterion={dt_criterion})", fontsize=11, color='black')
+        st.pyplot(fig_tree, bbox_inches='tight'); plt.close(fig_tree)
 
         # Feature importance bar chart
         st.subheader(f"Feature Importance ({component_label}s ranked by split contribution)")
@@ -1584,6 +1692,7 @@ else:
                           labels={'Importance': 'Relative Importance'})
         fig_imp.update_layout(height=350, showlegend=False)
         fig_imp.update_coloraxes(showscale=False)
+        apply_white_theme(fig_imp)
         st.plotly_chart(fig_imp, use_container_width=True)
         st.caption("Importance = total reduction in impurity weighted by the number of samples reaching each split. "
                    "Values sum to 1.0 across all components used.")
