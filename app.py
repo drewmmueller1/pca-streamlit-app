@@ -147,6 +147,20 @@ st.dataframe(df.head())
 if 'label' not in df.columns:
     st.warning("No 'label' column found — will be generated from column names if Transpose is enabled.")
 
+# ── Publication theme toggle (must be defined before any chart is drawn) ─────
+use_white_theme = st.toggle(
+    "📄 Publication / White Background Mode",
+    value=False,
+    help=(
+        "**OFF (default):** plots use your browser's theme — dark mode friendly, "
+        "great for exploratory analysis on screen.\n\n"
+        "**ON:** all plots switch to a white background with black text and light gray gridlines. "
+        "Turn this on when preparing figures for reports, publications, or presentations "
+        "where a clean white background is required. "
+        "Downloaded plots will match exactly what you see on screen."
+    )
+)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR – ANALYSIS MODE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -652,22 +666,6 @@ else:
 unique_plot_labels = sorted(y_plot.unique())
 plot_color_map = {lbl: color_map_hex.get(lbl, DEFAULT_COLORS[i%len(DEFAULT_COLORS)])
                   for i,lbl in enumerate(unique_plot_labels)}
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PUBLICATION THEME TOGGLE
-# ══════════════════════════════════════════════════════════════════════════════
-use_white_theme = st.toggle(
-    "📄 Publication / White Background Mode",
-    value=False,
-    help=(
-        "**OFF (default):** plots use your browser's theme (dark mode friendly — "
-        "great for exploratory analysis on screen).\n\n"
-        "**ON:** all plots switch to a white background with black text and light gray gridlines. "
-        "Use this when preparing figures for reports, publications, or presentations "
-        "where a clean white background is required. "
-        "Downloaded plots will match exactly what you see on screen."
-    )
-)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PCR / PLS REGRESSION DIAGNOSTICS  (shown first so prediction quality is
