@@ -169,7 +169,8 @@ with st.sidebar.expander("Analysis Mode", expanded=True):
         "Decomposition method:",
         ["PCA (Principal Component Analysis)",
          "PCR (Principal Component Regression)",
-         "PLS (Partial Least Squares)"],
+         "PLS (Partial Least Squares)",
+         "None (classification on standardized features only)"],
         index=0,
         help=(
             "**PCA:** Unsupervised — finds directions of maximum variance in X. "
@@ -177,7 +178,10 @@ with st.sidebar.expander("Analysis Mode", expanded=True):
             "**PCR:** Supervised regression — runs PCA on X first, then regresses "
             "selected PCs against a continuous Y target. Good when X is highly collinear.\n\n"
             "**PLS:** Supervised — finds latent components that maximally co-vary with Y. "
-            "Generally outperforms PCR when the target is strongly related to specific features."
+            "Generally outperforms PCR when the target is strongly related to specific features.\n\n"
+            "**None:** Skips decomposition entirely. Applies normalization and standardization, "
+            "then runs classification directly on the standardized features. "
+            "Use this as a baseline to check whether PCA/PCR/PLS actually improves accuracy."
         )
     )
 
@@ -395,13 +399,26 @@ if analysis_mode != "PCA (Principal Component Analysis)":
 # ══════════════════════════════════════════════════════════════════════════════
 pca_full   = None
 pls_model  = None
-X_scores   = None   # scores matrix (samples × components), used everywhere below
+X_scores   = None
 var_ratios = None
-component_label = "PC"   # "PC" for PCA/PCR, "LV" for PLS
+component_label = "PC"
 
 n_max_components = min(X_scaled.shape[0] - 1, X_scaled.shape[1])
 
-if analysis_mode == "PCA (Principal Component Analysis)":
+if analysis_mode == "None (classification on standardized features only)":
+    # Skip decomposition — use standardized features directly for classification
+    X_scores        = X_scaled.copy()
+    n_total_pcs     = X_scores.shape[1]
+    var_ratios      = np.zeros(n_total_pcs)   # no variance decomposition
+    component_label = "Feature"
+    st.info(
+        f"**No decomposition mode:** classification and clustering will run directly on the "
+        f"{n_total_pcs} standardized features. All PCA/scree/loadings plots are skipped. "
+        "Compare the classification accuracy here against PCA/PCR/PLS results to evaluate "
+        "whether dimensionality reduction genuinely helps your dataset."
+    )
+
+elif analysis_mode == "PCA (Principal Component Analysis)":
     pca_full   = PCA()
     X_scores   = pca_full.fit_transform(X_scaled)
     var_ratios = pca_full.explained_variance_ratio_
@@ -416,7 +433,7 @@ elif analysis_mode == "PCR (Principal Component Regression)":
     n_total_pcs = X_scores.shape[1]
     component_label = "PC"
 
-else:  # PLS
+elif analysis_mode == "PLS (Partial Least Squares)":
     if y_target is None:
         st.error("PLS requires a target variable — select one above.")
         st.stop()
@@ -439,8 +456,10 @@ else:  # PLS
     component_label = "LV"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PIPELINE SUMMARY CARD
+# PIPELINE SUMMARY CARD + DECOMPOSITION PLOTS (skipped in None mode)
 # ══════════════════════════════════════════════════════════════════════════════
+is_none_mode = (analysis_mode == "None (classification on standardized features only)")
+
 cum_var = np.cumsum(var_ratios)
 n_95  = int(np.argmax(cum_var >= 0.95)) + 1 if np.any(cum_var >= 0.95) else n_total_pcs
 n_99  = int(np.argmax(cum_var >= 0.99)) + 1 if np.any(cum_var >= 0.99) else n_total_pcs
@@ -458,8 +477,9 @@ std_detail_map = {
     'Z-score':  "Z-score: each variable (column) centered and scaled by population mean and std (population-wise).",
 }
 
-with st.expander(f"📋 {analysis_mode.split('(')[0].strip()} Pipeline Details", expanded=True):
-    st.markdown(f"""
+if not is_none_mode:
+    with st.expander(f"📋 {analysis_mode.split('(')[0].strip()} Pipeline Details", expanded=True):
+        st.markdown(f"""
 **Input:** {X_scaled.shape[0]} samples × {X_scaled.shape[1]} features  
 **Step 1 — Normalization:** {norm_detail_map.get(norm_option, norm_option)}  
 **Step 2 — Standardization:** {std_detail_map.get(preprocess_option, preprocess_option)}  
@@ -468,47 +488,48 @@ with st.expander(f"📋 {analysis_mode.split('(')[0].strip()} Pipeline Details",
 | Component | Variance Explained | Cumulative |
 |---|---|---|
 """ + "\n".join([
-        f"| {component_label}{i+1} | {var_ratios[i]:.2%} | {cum_var[i]:.2%} |"
-        for i in range(min(5, n_total_pcs))
-    ]) + f"""
+            f"| {component_label}{i+1} | {var_ratios[i]:.2%} | {cum_var[i]:.2%} |"
+            for i in range(min(5, n_total_pcs))
+        ]) + f"""
 
 **95% cumulative variance at:** {component_label}{n_95}  
 **99% cumulative variance at:** {component_label}{n_99}
 """)
-    top_n = min(10, n_total_pcs)
-    fig_sum = go.Figure(go.Bar(
-        x=[f"{component_label}{i+1}" for i in range(top_n)],
-        y=[v*100 for v in var_ratios[:top_n]],
-        marker_color='steelblue', opacity=0.85,
-        text=[f"{v*100:.1f}%" for v in var_ratios[:top_n]], textposition='outside'
-    ))
-    fig_sum.update_layout(
-        title=f"Variance Explained — Top {top_n} {component_label}s",
-        xaxis_title="Component", yaxis_title="% Variance Explained",
-        height=280, margin=dict(t=40,b=30,l=40,r=10),
-        yaxis=dict(range=[0, var_ratios[0]*115])
-    )
-    apply_white_theme(fig_sum)
-    st.plotly_chart(fig_sum, use_container_width=True)
+        top_n = min(10, n_total_pcs)
+        fig_sum = go.Figure(go.Bar(
+            x=[f"{component_label}{i+1}" for i in range(top_n)],
+            y=[v*100 for v in var_ratios[:top_n]],
+            marker_color='steelblue', opacity=0.85,
+            text=[f"{v*100:.1f}%" for v in var_ratios[:top_n]], textposition='outside'
+        ))
+        fig_sum.update_layout(
+            title=f"Variance Explained — Top {top_n} {component_label}s",
+            xaxis_title="Component", yaxis_title="% Variance Explained",
+            height=280, margin=dict(t=40,b=30,l=40,r=10),
+            yaxis=dict(range=[0, max(var_ratios[0]*115, 1)])
+        )
+        apply_white_theme(fig_sum)
+        st.plotly_chart(fig_sum, use_container_width=True)
 
-# PCA Diagnostics
-if pca_full is not None:
-    pca_issues = diagnose_pca(X_scores, var_ratios)
-    if pca_issues:
-        st.subheader("⚠️ PCA Diagnostics")
-        st.warning("Issues detected that may cause points to appear collapsed onto an axis.")
-        label_map = {'zero_variance':'Zero Variance','near_zero_variance':'Near-Zero Variance','axis_clustering':'Axis-End Clustering'}
-        for issue in pca_issues:
-            with st.expander(f"⚠️ {component_label}{issue['pc']} — {label_map.get(issue['type'], issue['type'])}", expanded=True):
-                st.markdown(issue['detail'])
-                col_data = X_scores[:, issue['pc']-1]
-                fig_diag = go.Figure(go.Histogram(x=col_data, nbinsx=30, marker_color='salmon', opacity=0.8))
-                fig_diag.update_layout(title=f"{component_label}{issue['pc']} Score Distribution",
-                                       xaxis_title="Score", yaxis_title="Count",
-                                       height=250, margin=dict(t=35,b=30,l=30,r=10))
-                apply_white_theme(fig_diag)
-                st.plotly_chart(fig_diag, use_container_width=True)
+    # PCA Diagnostics
+    if pca_full is not None:
+        pca_issues = diagnose_pca(X_scores, var_ratios)
+        if pca_issues:
+            st.subheader("⚠️ PCA Diagnostics")
+            st.warning("Issues detected that may cause points to appear collapsed onto an axis.")
+            label_map = {'zero_variance':'Zero Variance','near_zero_variance':'Near-Zero Variance','axis_clustering':'Axis-End Clustering'}
+            for issue in pca_issues:
+                with st.expander(f"⚠️ {component_label}{issue['pc']} — {label_map.get(issue['type'], issue['type'])}", expanded=True):
+                    st.markdown(issue['detail'])
+                    col_data = X_scores[:, issue['pc']-1]
+                    fig_diag = go.Figure(go.Histogram(x=col_data, nbinsx=30, marker_color='salmon', opacity=0.8))
+                    fig_diag.update_layout(title=f"{component_label}{issue['pc']} Score Distribution",
+                                           xaxis_title="Score", yaxis_title="Count",
+                                           height=250, margin=dict(t=35,b=30,l=30,r=10))
+                    apply_white_theme(fig_diag)
+                    st.plotly_chart(fig_diag, use_container_width=True)
 
+# Always set these — used by classification/clustering
 if n_total_pcs >= 2:
     X_scores_2d_global = X_scores[:, :2]
     y_global           = y
@@ -777,267 +798,268 @@ if analysis_mode != "PCA (Principal Component Analysis)" and y_target is not Non
     st.plotly_chart(fig_res, use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 1. 2D SCORES PLOT
+# SCORES PLOTS, SCREE, LOADINGS, DOWNLOADS — skipped in None mode
 # ══════════════════════════════════════════════════════════════════════════════
-if show_2d and n_total_pcs >= 2:
-    st.subheader(f"2D {component_label} Scores Plot ({cx_2d} vs {cy_2d})")
-    xv, yv = X_scores[:, cx_idx], X_scores[:, cy_idx]
-    xvar, yvar = var_ratios[cx_idx], var_ratios[cy_idx]
-    df_2d = pd.DataFrame({cx_2d: xv, cy_2d: yv, 'label': y_plot.values})
-    ul2d       = sorted(df_2d['label'].unique())
-    mpl_colors = [plot_color_map.get(l, DEFAULT_COLORS[i%len(DEFAULT_COLORS)]) for i,l in enumerate(ul2d)]
-    if legend_separate:
-        fig_m, ax_m = plt.subplots(figsize=(8,6))
-        if use_white_theme:
-            fig_m.patch.set_facecolor('white'); ax_m.set_facecolor('white')
-        for lbl, col in zip(ul2d, mpl_colors):
-            m = df_2d['label']==lbl
-            ax_m.scatter(df_2d[m][cx_2d], df_2d[m][cy_2d], c=col, label=lbl, s=50)
-        lbl_kw = dict(color='black') if use_white_theme else {}
-        ax_m.set_xlabel(f"{cx_2d} ({xvar:.1%})", **lbl_kw)
-        ax_m.set_ylabel(f"{cy_2d} ({yvar:.1%})", **lbl_kw)
-        ax_m.set_title(f"2D {component_label} Scores", **lbl_kw)
-        if use_white_theme:
-            ax_m.tick_params(colors='black')
-            ax_m.grid(True, alpha=0.3, color='#cccccc')
-            for sp in ax_m.spines.values(): sp.set_edgecolor('#cccccc')
-        else:
-            ax_m.grid(True, alpha=0.3)
-        st.pyplot(fig_m, bbox_inches='tight'); plt.close(fig_m)
-        fig_lg, ax_lg = plt.subplots(figsize=(2, len(ul2d)*0.5))
-        if use_white_theme:
-            fig_lg.patch.set_facecolor('white'); ax_lg.set_facecolor('white')
-        ax_lg.axis('off')
-        handles = [plt.Line2D([0],[0],marker='o',color='w',markerfacecolor=c,markersize=8,label=l)
-                   for l,c in zip(ul2d,mpl_colors)]
-        leg = ax_lg.legend(handles=handles, loc='center')
-        if use_white_theme:
-            for txt in leg.get_texts(): txt.set_color('black')
-        st.pyplot(fig_lg, bbox_inches='tight'); plt.close(fig_lg)
-    else:
-        fig, ax = plt.subplots(figsize=(10,6))
-        if use_white_theme:
-            fig.patch.set_facecolor('white'); ax.set_facecolor('white')
-        for lbl, col in zip(ul2d, mpl_colors):
-            m = df_2d['label']==lbl
-            ax.scatter(df_2d[m][cx_2d], df_2d[m][cy_2d], c=col, label=lbl, s=50)
-        lbl_kw = dict(color='black') if use_white_theme else {}
-        ax.set_xlabel(f"{cx_2d} ({xvar:.1%})", **lbl_kw)
-        ax.set_ylabel(f"{cy_2d} ({yvar:.1%})", **lbl_kw)
-        ax.set_title(f"2D {component_label} Scores Plot", **lbl_kw)
-        if use_white_theme:
-            ax.tick_params(colors='black')
-            ax.grid(True, alpha=0.3, color='#cccccc')
-            for sp in ax.spines.values(): sp.set_edgecolor('#cccccc')
-            leg = ax.legend()
-            for txt in leg.get_texts(): txt.set_color('black')
-        else:
-            ax.legend(); ax.grid(True, alpha=0.3)
-        st.pyplot(fig, bbox_inches='tight'); plt.close(fig)
-elif show_2d:
-    st.warning("Need at least 2 components for 2D plot.")
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 2. 3D SCORES PLOT
-# ══════════════════════════════════════════════════════════════════════════════
-if show_3d and n_total_pcs >= 3:
-    st.subheader(f"3D {component_label} Scores Plot (Interactive)")
-    df_3d = pd.DataFrame(X_scores[:,:3], columns=[f"{component_label}{i+1}" for i in range(3)])
-    df_3d['label'] = y_plot.values
-    fig_3d = px.scatter_3d(df_3d, x=f"{component_label}1", y=f"{component_label}2",
-                            z=f"{component_label}3", color='label',
-                            color_discrete_map=plot_color_map)
-    fig_3d.update_traces(marker=dict(size=5))
-    if legend_separate:
-        fig_3d.update_layout(showlegend=False)
-    else:
-        fig_3d.update_layout(
-            title=f"Interactive 3D {component_label} Scores",
-            scene=dict(xaxis_title=f"{component_label}1 ({var_ratios[0]:.1%})",
-                       yaxis_title=f"{component_label}2 ({var_ratios[1]:.1%})",
-                       zaxis_title=f"{component_label}3 ({var_ratios[2]:.1%})"))
-    apply_white_theme(fig_3d)
-    st.plotly_chart(fig_3d, use_container_width=True)
-elif show_3d:
-    st.warning("Need at least 3 components for 3D plot.")
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 3. SCREE PLOT
-# ══════════════════════════════════════════════════════════════════════════════
-if show_scree:
-    st.subheader(f"Scree Plot: Variance Explained ({component_label}s)")
-    var_pct = var_ratios[:n_scree] * 100
-    fig_scree = go.Figure()
-    fig_scree.add_trace(go.Bar(
-        x=[f"{component_label}{i+1}" for i in range(n_scree)],
-        y=var_pct, name='% Variance', marker_color='lightblue'
-    ))
-    for i, v in enumerate(var_pct):
-        fig_scree.add_annotation(x=f"{component_label}{i+1}", y=v, text=f"{v:.1f}%",
-                                  showarrow=False, yshift=10, font=dict(size=10))
-    fig_scree.update_layout(
-        title=f"Scree Plot — {n_scree} {component_label}s",
-        xaxis_title="Component", yaxis_title="% Variance Explained",
-        yaxis=dict(range=[0, var_pct.max()*1.15])
-    )
-    apply_white_theme(fig_scree)
-    st.plotly_chart(fig_scree, use_container_width=True)
-    st.info(f"Shown: {np.sum(var_ratios[:n_scree]):.1%} | ≥99% at {component_label}{n_99_s}")
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 4. LOADINGS / WEIGHTS PLOT
-# ══════════════════════════════════════════════════════════════════════════════
-if show_loadings:
-    # Determine loadings matrix depending on mode
-    if pca_full is not None:
-        loadings_matrix = pd.DataFrame(
-            pca_full.components_,
-            columns=X.columns,
-            index=[f"{component_label}{i+1}" for i in range(n_total_pcs)]
-        )
-        loadings_title_suffix = "Factor Loadings"
-    elif pls_model is not None:
-        loadings_matrix = pd.DataFrame(
-            pls_model.x_weights_.T,
-            columns=X.columns,
-            index=[f"{component_label}{i+1}" for i in range(n_pls_components)]
-        )
-        loadings_title_suffix = "X Weights"
-    else:
-        loadings_matrix = None
-
-    if loadings_matrix is None:
-        st.warning("Loadings not available.")
-    else:
-        # Part A: Top-3 grouped
-        st.subheader(f"{loadings_title_suffix} Plot (Top 3 {component_label}s)")
-        max_c       = min(3, n_total_pcs)
-        valid_idx   = [i for i in range(max_c) if var_ratios[i] > 0]
-        if not valid_idx:
-            st.warning(f"No {component_label}s with >0% variance.")
-        else:
-            lt3     = loadings_matrix.iloc[valid_idx].abs()
-            bar_clr = px.colors.qualitative.Set3[:len(valid_idx)]
-            if loadings_type == "Bar Graph (Discrete, e.g., GCMS)":
-                sv = lt3.max(axis=0).sort_values(ascending=False).index
-                fg = go.Figure()
-                for i, pc in enumerate(lt3.index):
-                    fg.add_trace(go.Bar(x=sv, y=lt3.loc[pc,sv].values, name=pc,
-                                        marker_color=bar_clr[i], width=0.25, base=0, offsetgroup=i))
-                fg.update_layout(barmode='group', height=400, showlegend=True,
-                                  title=f"{loadings_title_suffix}: Grouped Bar (Abs, Top 3 {component_label}s)",
-                                  xaxis_title="Variables", yaxis_title="Loading Magnitude")
-                fg.update_xaxes(tickangle=45, tickfont=dict(size=9))
+if not is_none_mode:
+    if show_2d and n_total_pcs >= 2:
+        st.subheader(f"2D {component_label} Scores Plot ({cx_2d} vs {cy_2d})")
+        xv, yv = X_scores[:, cx_idx], X_scores[:, cy_idx]
+        xvar, yvar = var_ratios[cx_idx], var_ratios[cy_idx]
+        df_2d = pd.DataFrame({cx_2d: xv, cy_2d: yv, 'label': y_plot.values})
+        ul2d       = sorted(df_2d['label'].unique())
+        mpl_colors = [plot_color_map.get(l, DEFAULT_COLORS[i%len(DEFAULT_COLORS)]) for i,l in enumerate(ul2d)]
+        if legend_separate:
+            fig_m, ax_m = plt.subplots(figsize=(8,6))
+            if use_white_theme:
+                fig_m.patch.set_facecolor('white'); ax_m.set_facecolor('white')
+            for lbl, col in zip(ul2d, mpl_colors):
+                m = df_2d['label']==lbl
+                ax_m.scatter(df_2d[m][cx_2d], df_2d[m][cy_2d], c=col, label=lbl, s=50)
+            lbl_kw = dict(color='black') if use_white_theme else {}
+            ax_m.set_xlabel(f"{cx_2d} ({xvar:.1%})", **lbl_kw)
+            ax_m.set_ylabel(f"{cy_2d} ({yvar:.1%})", **lbl_kw)
+            ax_m.set_title(f"2D {component_label} Scores", **lbl_kw)
+            if use_white_theme:
+                ax_m.tick_params(colors='black')
+                ax_m.grid(True, alpha=0.3, color='#cccccc')
+                for sp in ax_m.spines.values(): sp.set_edgecolor('#cccccc')
             else:
-                orig = X.columns.tolist()
-                melt = lt3.reset_index().melt(id_vars='index', var_name='Variable', value_name='Loading')
-                melt['Component'] = melt['index']
-                melt['Variable']  = pd.Categorical(melt['Variable'], categories=orig, ordered=True)
-                melt = melt.sort_values(['Component','Variable'])
-                fg = px.line(melt, x='Variable', y='Loading', color='Component', markers=False,
-                             title=f"{loadings_title_suffix}: Connected Line (Abs, Top 3 {component_label}s)")
-                fg.update_traces(line=dict(width=2)); fg.update_xaxes(tickangle=45, tickfont=dict(size=9))
-            apply_white_theme(fg)
-            st.plotly_chart(fg, use_container_width=True)
-            st.subheader(f"{loadings_title_suffix} Table (Top 3 {component_label}s)")
-            st.dataframe(loadings_matrix.iloc[valid_idx])
-
-        # Part B: Single component explorer
-        st.subheader(f"{loadings_title_suffix} — Single {component_label} Explorer")
-        sel_comp_num = st.slider(f"Select {component_label} to explore", 1, min(10,n_total_pcs), 1)
-        sel_comp_idx = sel_comp_num - 1
-        if sel_comp_idx >= n_total_pcs or var_ratios[sel_comp_idx] == 0:
-            st.warning(f"{component_label}{sel_comp_num} has zero variance.")
+                ax_m.grid(True, alpha=0.3)
+            st.pyplot(fig_m, bbox_inches='tight'); plt.close(fig_m)
+            fig_lg, ax_lg = plt.subplots(figsize=(2, len(ul2d)*0.5))
+            if use_white_theme:
+                fig_lg.patch.set_facecolor('white'); ax_lg.set_facecolor('white')
+            ax_lg.axis('off')
+            handles = [plt.Line2D([0],[0],marker='o',color='w',markerfacecolor=c,markersize=8,label=l)
+                       for l,c in zip(ul2d,mpl_colors)]
+            leg = ax_lg.legend(handles=handles, loc='center')
+            if use_white_theme:
+                for txt in leg.get_texts(): txt.set_color('black')
+            st.pyplot(fig_lg, bbox_inches='tight'); plt.close(fig_lg)
         else:
-            lrow     = loadings_matrix.iloc[sel_comp_idx]
-            lrow_abs = lrow.abs()
-            st.info(f"Variance by {component_label}{sel_comp_num}: {var_ratios[sel_comp_idx]:.1%}")
-            if loadings_type == "Bar Graph (Discrete, e.g., GCMS)":
-                sv2  = lrow_abs.sort_values(ascending=False).index
-                fg2  = go.Figure()
-                fg2.add_trace(go.Bar(x=sv2, y=lrow_abs.loc[sv2].values,
-                                      marker_color='steelblue', name=f"{component_label}{sel_comp_num}"))
-                fg2.update_layout(title=f"{loadings_title_suffix}: {component_label}{sel_comp_num} (Abs)",
-                                   xaxis_title="Variables", yaxis_title="Magnitude", height=400)
-                fg2.update_xaxes(tickangle=45, tickfont=dict(size=9))
+            fig, ax = plt.subplots(figsize=(10,6))
+            if use_white_theme:
+                fig.patch.set_facecolor('white'); ax.set_facecolor('white')
+            for lbl, col in zip(ul2d, mpl_colors):
+                m = df_2d['label']==lbl
+                ax.scatter(df_2d[m][cx_2d], df_2d[m][cy_2d], c=col, label=lbl, s=50)
+            lbl_kw = dict(color='black') if use_white_theme else {}
+            ax.set_xlabel(f"{cx_2d} ({xvar:.1%})", **lbl_kw)
+            ax.set_ylabel(f"{cy_2d} ({yvar:.1%})", **lbl_kw)
+            ax.set_title(f"2D {component_label} Scores Plot", **lbl_kw)
+            if use_white_theme:
+                ax.tick_params(colors='black')
+                ax.grid(True, alpha=0.3, color='#cccccc')
+                for sp in ax.spines.values(): sp.set_edgecolor('#cccccc')
+                leg = ax.legend()
+                for txt in leg.get_texts(): txt.set_color('black')
             else:
-                fg2 = go.Figure()
-                fg2.add_trace(go.Scatter(x=X.columns.tolist(), y=lrow_abs.values,
-                                          mode='lines', line=dict(width=2),
-                                          name=f"{component_label}{sel_comp_num}"))
-                fg2.update_layout(title=f"{loadings_title_suffix}: {component_label}{sel_comp_num} (Abs, Line)",
-                                   xaxis_title="Variables", yaxis_title="Magnitude", height=400)
-                fg2.update_xaxes(tickangle=45, tickfont=dict(size=9))
-            apply_white_theme(fg2)
-            st.plotly_chart(fg2, use_container_width=True)
-            st.subheader(f"{loadings_title_suffix} Table — {component_label}{sel_comp_num}")
-            st.dataframe(lrow.to_frame(name=f"{component_label}{sel_comp_num}"))
-
-# ══════════════════════════════════════════════════════════════════════════════
-# DOWNLOADS
-# ══════════════════════════════════════════════════════════════════════════════
-st.subheader("Download Results")
-col1, col2 = st.columns(2)
-
-with col1:
-    df_scores_dl = pd.DataFrame(
-        X_scores[:, :num_save_pcs],
-        columns=[f"{component_label}{i+1}" for i in range(num_save_pcs)]
+                ax.legend(); ax.grid(True, alpha=0.3)
+            st.pyplot(fig, bbox_inches='tight'); plt.close(fig)
+    elif show_2d:
+        st.warning("Need at least 2 components for 2D plot.")
+    
+    # ══════════════════════════════════════════════════════════════════════════════
+    # 2. 3D SCORES PLOT
+    # ══════════════════════════════════════════════════════════════════════════════
+    if show_3d and n_total_pcs >= 3:
+        st.subheader(f"3D {component_label} Scores Plot (Interactive)")
+        df_3d = pd.DataFrame(X_scores[:,:3], columns=[f"{component_label}{i+1}" for i in range(3)])
+        df_3d['label'] = y_plot.values
+        fig_3d = px.scatter_3d(df_3d, x=f"{component_label}1", y=f"{component_label}2",
+                                z=f"{component_label}3", color='label',
+                                color_discrete_map=plot_color_map)
+        fig_3d.update_traces(marker=dict(size=5))
+        if legend_separate:
+            fig_3d.update_layout(showlegend=False)
+        else:
+            fig_3d.update_layout(
+                title=f"Interactive 3D {component_label} Scores",
+                scene=dict(xaxis_title=f"{component_label}1 ({var_ratios[0]:.1%})",
+                           yaxis_title=f"{component_label}2 ({var_ratios[1]:.1%})",
+                           zaxis_title=f"{component_label}3 ({var_ratios[2]:.1%})"))
+        apply_white_theme(fig_3d)
+        st.plotly_chart(fig_3d, use_container_width=True)
+    elif show_3d:
+        st.warning("Need at least 3 components for 3D plot.")
+    
+    # ══════════════════════════════════════════════════════════════════════════════
+    # 3. SCREE PLOT
+    # ══════════════════════════════════════════════════════════════════════════════
+    if show_scree:
+        st.subheader(f"Scree Plot: Variance Explained ({component_label}s)")
+        var_pct = var_ratios[:n_scree] * 100
+        fig_scree = go.Figure()
+        fig_scree.add_trace(go.Bar(
+            x=[f"{component_label}{i+1}" for i in range(n_scree)],
+            y=var_pct, name='% Variance', marker_color='lightblue'
+        ))
+        for i, v in enumerate(var_pct):
+            fig_scree.add_annotation(x=f"{component_label}{i+1}", y=v, text=f"{v:.1f}%",
+                                      showarrow=False, yshift=10, font=dict(size=10))
+        fig_scree.update_layout(
+            title=f"Scree Plot — {n_scree} {component_label}s",
+            xaxis_title="Component", yaxis_title="% Variance Explained",
+            yaxis=dict(range=[0, var_pct.max()*1.15])
+        )
+        apply_white_theme(fig_scree)
+        st.plotly_chart(fig_scree, use_container_width=True)
+        st.info(f"Shown: {np.sum(var_ratios[:n_scree]):.1%} | ≥99% at {component_label}{n_99_s}")
+    
+    # ══════════════════════════════════════════════════════════════════════════════
+    # 4. LOADINGS / WEIGHTS PLOT
+    # ══════════════════════════════════════════════════════════════════════════════
+    if show_loadings:
+        # Determine loadings matrix depending on mode
+        if pca_full is not None:
+            loadings_matrix = pd.DataFrame(
+                pca_full.components_,
+                columns=X.columns,
+                index=[f"{component_label}{i+1}" for i in range(n_total_pcs)]
+            )
+            loadings_title_suffix = "Factor Loadings"
+        elif pls_model is not None:
+            loadings_matrix = pd.DataFrame(
+                pls_model.x_weights_.T,
+                columns=X.columns,
+                index=[f"{component_label}{i+1}" for i in range(n_pls_components)]
+            )
+            loadings_title_suffix = "X Weights"
+        else:
+            loadings_matrix = None
+    
+        if loadings_matrix is None:
+            st.warning("Loadings not available.")
+        else:
+            # Part A: Top-3 grouped
+            st.subheader(f"{loadings_title_suffix} Plot (Top 3 {component_label}s)")
+            max_c       = min(3, n_total_pcs)
+            valid_idx   = [i for i in range(max_c) if var_ratios[i] > 0]
+            if not valid_idx:
+                st.warning(f"No {component_label}s with >0% variance.")
+            else:
+                lt3     = loadings_matrix.iloc[valid_idx].abs()
+                bar_clr = px.colors.qualitative.Set3[:len(valid_idx)]
+                if loadings_type == "Bar Graph (Discrete, e.g., GCMS)":
+                    sv = lt3.max(axis=0).sort_values(ascending=False).index
+                    fg = go.Figure()
+                    for i, pc in enumerate(lt3.index):
+                        fg.add_trace(go.Bar(x=sv, y=lt3.loc[pc,sv].values, name=pc,
+                                            marker_color=bar_clr[i], width=0.25, base=0, offsetgroup=i))
+                    fg.update_layout(barmode='group', height=400, showlegend=True,
+                                      title=f"{loadings_title_suffix}: Grouped Bar (Abs, Top 3 {component_label}s)",
+                                      xaxis_title="Variables", yaxis_title="Loading Magnitude")
+                    fg.update_xaxes(tickangle=45, tickfont=dict(size=9))
+                else:
+                    orig = X.columns.tolist()
+                    melt = lt3.reset_index().melt(id_vars='index', var_name='Variable', value_name='Loading')
+                    melt['Component'] = melt['index']
+                    melt['Variable']  = pd.Categorical(melt['Variable'], categories=orig, ordered=True)
+                    melt = melt.sort_values(['Component','Variable'])
+                    fg = px.line(melt, x='Variable', y='Loading', color='Component', markers=False,
+                                 title=f"{loadings_title_suffix}: Connected Line (Abs, Top 3 {component_label}s)")
+                    fg.update_traces(line=dict(width=2)); fg.update_xaxes(tickangle=45, tickfont=dict(size=9))
+                apply_white_theme(fg)
+                st.plotly_chart(fg, use_container_width=True)
+                st.subheader(f"{loadings_title_suffix} Table (Top 3 {component_label}s)")
+                st.dataframe(loadings_matrix.iloc[valid_idx])
+    
+            # Part B: Single component explorer
+            st.subheader(f"{loadings_title_suffix} — Single {component_label} Explorer")
+            sel_comp_num = st.slider(f"Select {component_label} to explore", 1, min(10,n_total_pcs), 1)
+            sel_comp_idx = sel_comp_num - 1
+            if sel_comp_idx >= n_total_pcs or var_ratios[sel_comp_idx] == 0:
+                st.warning(f"{component_label}{sel_comp_num} has zero variance.")
+            else:
+                lrow     = loadings_matrix.iloc[sel_comp_idx]
+                lrow_abs = lrow.abs()
+                st.info(f"Variance by {component_label}{sel_comp_num}: {var_ratios[sel_comp_idx]:.1%}")
+                if loadings_type == "Bar Graph (Discrete, e.g., GCMS)":
+                    sv2  = lrow_abs.sort_values(ascending=False).index
+                    fg2  = go.Figure()
+                    fg2.add_trace(go.Bar(x=sv2, y=lrow_abs.loc[sv2].values,
+                                          marker_color='steelblue', name=f"{component_label}{sel_comp_num}"))
+                    fg2.update_layout(title=f"{loadings_title_suffix}: {component_label}{sel_comp_num} (Abs)",
+                                       xaxis_title="Variables", yaxis_title="Magnitude", height=400)
+                    fg2.update_xaxes(tickangle=45, tickfont=dict(size=9))
+                else:
+                    fg2 = go.Figure()
+                    fg2.add_trace(go.Scatter(x=X.columns.tolist(), y=lrow_abs.values,
+                                              mode='lines', line=dict(width=2),
+                                              name=f"{component_label}{sel_comp_num}"))
+                    fg2.update_layout(title=f"{loadings_title_suffix}: {component_label}{sel_comp_num} (Abs, Line)",
+                                       xaxis_title="Variables", yaxis_title="Magnitude", height=400)
+                    fg2.update_xaxes(tickangle=45, tickfont=dict(size=9))
+                apply_white_theme(fg2)
+                st.plotly_chart(fg2, use_container_width=True)
+                st.subheader(f"{loadings_title_suffix} Table — {component_label}{sel_comp_num}")
+                st.dataframe(lrow.to_frame(name=f"{component_label}{sel_comp_num}"))
+    
+    # ══════════════════════════════════════════════════════════════════════════════
+    # DOWNLOADS
+    # ══════════════════════════════════════════════════════════════════════════════
+    st.subheader("Download Results")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        df_scores_dl = pd.DataFrame(
+            X_scores[:, :num_save_pcs],
+            columns=[f"{component_label}{i+1}" for i in range(num_save_pcs)]
+        )
+        df_scores_dl['label'] = y.values
+        st.download_button("⬇ Scores CSV", df_scores_dl.to_csv(index=False),
+                            f"{component_label.lower()}_scores.csv", "text/csv",
+                            help=f"Scores for the top {num_save_pcs} {component_label}s, one row per sample.")
+    
+    with col2:
+        df_scree_dl = pd.DataFrame({
+            "Component":             [f"{component_label}{i+1}" for i in range(n_total_pcs)],
+            "Variance_Explained_%":  [round(v*100, 4) for v in var_ratios],
+            "Cumulative_Variance_%": [round(c*100, 4) for c in np.cumsum(var_ratios)],
+        })
+        st.download_button("⬇ Scree Data CSV", df_scree_dl.to_csv(index=False),
+                            "scree_data.csv", "text/csv",
+                            help="Individual and cumulative variance for all components.")
+    
+    col3, col4 = st.columns(2)
+    with col3:
+        if pca_full is not None or pls_model is not None:
+            lm = loadings_matrix if 'loadings_matrix' in dir() and loadings_matrix is not None else None
+            if lm is not None:
+                lraw_T = lm.iloc[:num_save_pcs].T.reset_index().rename(columns={'index':'Variable'})
+                st.download_button("⬇ Loadings CSV (raw/signed)", lraw_T.to_csv(index=False),
+                                    "loadings_raw.csv", "text/csv",
+                                    help=f"Signed loadings/weights for {component_label}1–{component_label}{num_save_pcs}. Rows = variables.")
+        else:
+            st.info("Loadings not available.")
+    
+    with col4:
+        if pca_full is not None or pls_model is not None:
+            lm2 = loadings_matrix if 'loadings_matrix' in dir() and loadings_matrix is not None else None
+            if lm2 is not None:
+                labs_T = lm2.iloc[:num_save_pcs].abs().T.reset_index().rename(columns={'index':'Variable'})
+                st.download_button("⬇ Loadings CSV (absolute)", labs_T.to_csv(index=False),
+                                    "loadings_abs.csv", "text/csv",
+                                    help=f"Absolute loadings/weights for {component_label}1–{component_label}{num_save_pcs}.")
+        else:
+            st.info("Loadings not available.")
+    
+    # PCR/PLS regression results download
+    if analysis_mode != "PCA (Principal Component Analysis)" and y_target is not None:
+        df_reg_dl = pd.DataFrame({
+            'label': y.values, 'Actual_Y': y_target,
+            'Predicted_Y': y_pred, 'Residual': residuals
+        })
+        st.download_button("⬇ Regression Results CSV", df_reg_dl.to_csv(index=False),
+                            "regression_results.csv", "text/csv",
+                            help="Actual vs predicted Y values and residuals for each sample.")
+    
+    st.caption(
+        f"Scores and loadings include top {num_save_pcs} components. "
+        "Scree data includes all components. Loadings rows = variables, columns = components."
     )
-    df_scores_dl['label'] = y.values
-    st.download_button("⬇ Scores CSV", df_scores_dl.to_csv(index=False),
-                        f"{component_label.lower()}_scores.csv", "text/csv",
-                        help=f"Scores for the top {num_save_pcs} {component_label}s, one row per sample.")
-
-with col2:
-    df_scree_dl = pd.DataFrame({
-        "Component":             [f"{component_label}{i+1}" for i in range(n_total_pcs)],
-        "Variance_Explained_%":  [round(v*100, 4) for v in var_ratios],
-        "Cumulative_Variance_%": [round(c*100, 4) for c in np.cumsum(var_ratios)],
-    })
-    st.download_button("⬇ Scree Data CSV", df_scree_dl.to_csv(index=False),
-                        "scree_data.csv", "text/csv",
-                        help="Individual and cumulative variance for all components.")
-
-col3, col4 = st.columns(2)
-with col3:
-    if pca_full is not None or pls_model is not None:
-        lm = loadings_matrix if 'loadings_matrix' in dir() and loadings_matrix is not None else None
-        if lm is not None:
-            lraw_T = lm.iloc[:num_save_pcs].T.reset_index().rename(columns={'index':'Variable'})
-            st.download_button("⬇ Loadings CSV (raw/signed)", lraw_T.to_csv(index=False),
-                                "loadings_raw.csv", "text/csv",
-                                help=f"Signed loadings/weights for {component_label}1–{component_label}{num_save_pcs}. Rows = variables.")
-    else:
-        st.info("Loadings not available.")
-
-with col4:
-    if pca_full is not None or pls_model is not None:
-        lm2 = loadings_matrix if 'loadings_matrix' in dir() and loadings_matrix is not None else None
-        if lm2 is not None:
-            labs_T = lm2.iloc[:num_save_pcs].abs().T.reset_index().rename(columns={'index':'Variable'})
-            st.download_button("⬇ Loadings CSV (absolute)", labs_T.to_csv(index=False),
-                                "loadings_abs.csv", "text/csv",
-                                help=f"Absolute loadings/weights for {component_label}1–{component_label}{num_save_pcs}.")
-    else:
-        st.info("Loadings not available.")
-
-# PCR/PLS regression results download
-if analysis_mode != "PCA (Principal Component Analysis)" and y_target is not None:
-    df_reg_dl = pd.DataFrame({
-        'label': y.values, 'Actual_Y': y_target,
-        'Predicted_Y': y_pred, 'Residual': residuals
-    })
-    st.download_button("⬇ Regression Results CSV", df_reg_dl.to_csv(index=False),
-                        "regression_results.csv", "text/csv",
-                        help="Actual vs predicted Y values and residuals for each sample.")
-
-st.caption(
-    f"Scores and loadings include top {num_save_pcs} components. "
-    "Scree data includes all components. Loadings rows = variables, columns = components."
-)
-
-# ══════════════════════════════════════════════════════════════════════════════
+    
+    # ══════════════════════════════════════════════════════════════════════════════
 # CLUSTERING
 # ══════════════════════════════════════════════════════════════════════════════
 if run_kmeans and X_scores_2d_global is not None:
@@ -1079,11 +1101,36 @@ if run_kmeans and X_scores_2d_global is not None:
 # ══════════════════════════════════════════════════════════════════════════════
 st.header("Classification Results")
 
-if n_total_pcs < n_pcs_for_classification:
+if is_none_mode:
+    # In None mode: classify on all standardized features, no PC selection
+    X_class = X_scaled
+    if label_mode == "Default Labels":
+        y_selected           = y_global
+        title_suffix         = " (Multi-class)"
+        X_pca_full_for_sweep = X_scaled
+    else:
+        if not selected_for_a or not selected_for_b:
+            st.warning("Select groups to run combined classification.")
+            st.stop()
+        mga = y_global.isin(selected_for_a); mgb = y_global.isin(selected_for_b)
+        mgs = mga | mgb
+        X_class              = X_scaled[mgs]
+        X_pca_full_for_sweep = X_scaled[mgs]
+        y_selected           = np.where(mga[mgs], 0, 1)
+        title_suffix         = ""
+    n_pcs_for_classification = X_class.shape[1]  # use all features
+    st.info(
+        f"**None mode:** classifying directly on {n_pcs_for_classification} standardized features "
+        "(no dimensionality reduction). Accuracy-vs-components sweep is disabled in this mode."
+    )
+    run_classification = True
+
+elif n_total_pcs < n_pcs_for_classification:
     st.error(f"Not enough components. Selected {n_pcs_for_classification}, only {n_total_pcs} available.")
+    run_classification = False
+
 else:
     X_class = X_scores[:, :n_pcs_for_classification]
-
     if label_mode == "Default Labels":
         y_selected           = y_global
         title_suffix         = " (Multi-class)"
@@ -1098,6 +1145,9 @@ else:
         X_pca_full_for_sweep = X_scores[mgs]
         y_selected           = np.where(mga[mgs], 0, 1)
         title_suffix         = ""
+    run_classification = True
+
+if run_classification:
 
     le        = LabelEncoder()
     y_encoded = le.fit_transform(y_selected)
@@ -1543,13 +1593,14 @@ else:
         st.plotly_chart(fig_cm, use_container_width=True)
         show_train_test_accuracy(da_type, best_da, X_train, X_test, y_train_enc, y_test_enc, split_data)
 
-        st.subheader(f"{da_type} Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification})")
-        if da_type=="LDA":   cf = lambda: LDA()
-        elif da_type=="QDA": cf = lambda rp=0.001: QDA(reg_param=rp)
-        else:                cf = lambda: GaussianNB()
-        fig_sw, sw_sum = accuracy_vs_pcs_plot(cf, da_type, X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification)
-        if fig_sw: st.plotly_chart(fig_sw, use_container_width=True); st.info(sw_sum)
-        else: st.warning(sw_sum)
+        if not is_none_mode:
+            st.subheader(f"{da_type} Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification})")
+            if da_type=="LDA":   cf = lambda: LDA()
+            elif da_type=="QDA": cf = lambda rp=0.001: QDA(reg_param=rp)
+            else:                cf = lambda: GaussianNB()
+            fig_sw, sw_sum = accuracy_vs_pcs_plot(cf, da_type, X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification)
+            if fig_sw: apply_white_theme(fig_sw); st.plotly_chart(fig_sw, use_container_width=True); st.info(sw_sum)
+            else: st.warning(sw_sum)
 
         if n_pcs_for_classification == 2:
             st.subheader(f"{da_type} Decision Boundary{title_suffix}")
@@ -1569,60 +1620,64 @@ else:
 
     # ── KNN ───────────────────────────────────────────────────────────────────
     if run_knn:
-        # Cap k so it never exceeds the number of training samples
-        k_safe = min(k, X_train.shape[0])
-        if k_safe < k:
-            st.warning(
-                f"K was reduced from {k} to {k_safe} because the training set only has "
-                f"{X_train.shape[0]} samples. Increase training data or reduce K in the sidebar."
-            )
-        best_knn = KNeighborsClassifier(n_neighbors=k_safe)
-        best_knn.fit(X_train, y_train_enc)
-        with st.expander("📋 KNN Model Details", expanded=True):
-            st.markdown(f"**K-Nearest Neighbors:** classifies each sample by majority vote among its **{k_safe} nearest "
-                        f"neighbors** in {component_label} space (Euclidean distance). No explicit training — the model "
-                        "memorizes the training set and searches at prediction time.")
-            st.markdown(f"**Parameters:** `n_neighbors`=`{k_safe}`, `metric`=`minkowski(p=2)`, `weights`=`uniform`, `algorithm`=`auto`")
-            st.markdown(
-                f"**Input:** {X_train.shape[0]} training samples × {n_pcs_for_classification} {component_label}s  \n"
-                f"**Classes:** {list(unique_y)}  \n"
-                f"**Split:** " + (f"Yes — {int((1-test_size)*100)}% / {int(test_size*100)}%"
-                                   if (split_data and test_size is not None) else "No split")
-            )
-        y_pred_knn = best_knn.predict(X_test)
-        st.subheader(f"KNN Confusion Matrix{title_suffix}")
-        cm_knn = confusion_matrix(y_test_enc, y_pred_knn)
-        fig_ck = px.imshow(cm_knn, text_auto=True, x=list(unique_y), y=list(unique_y),
-                            color_continuous_scale='Blues',
-                            title=f"KNN Confusion Matrix — {'Test Set' if split_data else 'In-Sample (No Split)'}{title_suffix}")
-        apply_white_theme(fig_ck)
-        st.plotly_chart(fig_ck, use_container_width=True)
-        show_train_test_accuracy(f"KNN (k={k_safe})", best_knn, X_train, X_test, y_train_enc, y_test_enc, split_data)
-
-        st.subheader(f"KNN Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification}, k={k_safe})")
-        # Use default-argument capture to avoid Python closure bug with k_safe
-        fig_ksw, ksw_sum = accuracy_vs_pcs_plot(
-            lambda k=k_safe: KNeighborsClassifier(n_neighbors=k), f"KNN (k={k_safe})",
-            X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification)
-        if fig_ksw: st.plotly_chart(fig_ksw, use_container_width=True); st.info(ksw_sum)
-        else: st.warning(ksw_sum)
-
-        if n_pcs_for_classification == 2:
-            st.subheader(f"KNN Decision Boundary{title_suffix}")
-            render_decision_boundary(
-                f"KNN (k={k_safe})", best_knn, X_class[:, :2], y_encoded, unique_y,
-                f"{component_label}1", f"{component_label}2",
-                title_suffix, db_legend_mode
-            )
+        n_train = X_train.shape[0]
+        if n_train == 0:
+            st.error("KNN cannot run: training set is empty. Uncheck 'Split into train/test sets' or choose a smaller test size.")
         else:
-            st.info(f"Decision boundary only for exactly 2 {component_label}s (currently {n_pcs_for_classification}).")
-
-        # ── Formal visuals ─────────────────────────────────────────────────────
-        render_classification_report(f"KNN (k={k_safe})", y_test_enc, y_pred_knn, unique_y)
-
-        render_roc_curve(f"KNN (k={k_safe})", best_knn, X_train, X_test,
-                          y_train_enc, y_test_enc, unique_y, has_proba=True)
-
+            # Cap k at training set size, minimum 1
+            k_safe = max(1, min(k, n_train))
+            if k_safe < k:
+                st.warning(
+                        f"K was reduced from {k} to {k_safe} because the training set only has "
+                        f"{n_train} samples. Increase training data or reduce K in the sidebar."
+                    )
+                best_knn = KNeighborsClassifier(n_neighbors=k_safe)
+            best_knn.fit(X_train, y_train_enc)
+            with st.expander("📋 KNN Model Details", expanded=True):
+                st.markdown(f"**K-Nearest Neighbors:** classifies each sample by majority vote among its **{k_safe} nearest "
+                            f"neighbors** in {component_label} space (Euclidean distance). No explicit training — the model "
+                            "memorizes the training set and searches at prediction time.")
+                st.markdown(f"**Parameters:** `n_neighbors`=`{k_safe}`, `metric`=`minkowski(p=2)`, `weights`=`uniform`, `algorithm`=`auto`")
+                st.markdown(
+                    f"**Input:** {X_train.shape[0]} training samples × {n_pcs_for_classification} {component_label}s  \n"
+                    f"**Classes:** {list(unique_y)}  \n"
+                    f"**Split:** " + (f"Yes — {int((1-test_size)*100)}% / {int(test_size*100)}%"
+                                       if (split_data and test_size is not None) else "No split")
+                )
+            y_pred_knn = best_knn.predict(X_test)
+            st.subheader(f"KNN Confusion Matrix{title_suffix}")
+            cm_knn = confusion_matrix(y_test_enc, y_pred_knn)
+            fig_ck = px.imshow(cm_knn, text_auto=True, x=list(unique_y), y=list(unique_y),
+                                color_continuous_scale='Blues',
+                                title=f"KNN Confusion Matrix — {'Test Set' if split_data else 'In-Sample (No Split)'}{title_suffix}")
+            apply_white_theme(fig_ck)
+            st.plotly_chart(fig_ck, use_container_width=True)
+            show_train_test_accuracy(f"KNN (k={k_safe})", best_knn, X_train, X_test, y_train_enc, y_test_enc, split_data)
+    
+            if not is_none_mode:
+                st.subheader(f"KNN Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification}, k={k_safe})")
+                fig_ksw, ksw_sum = accuracy_vs_pcs_plot(
+                    lambda k=k_safe: KNeighborsClassifier(n_neighbors=k), f"KNN (k={k_safe})",
+                    X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification)
+                if fig_ksw: apply_white_theme(fig_ksw); st.plotly_chart(fig_ksw, use_container_width=True); st.info(ksw_sum)
+                else: st.warning(ksw_sum)
+    
+            if n_pcs_for_classification == 2:
+                st.subheader(f"KNN Decision Boundary{title_suffix}")
+                render_decision_boundary(
+                    f"KNN (k={k_safe})", best_knn, X_class[:, :2], y_encoded, unique_y,
+                    f"{component_label}1", f"{component_label}2",
+                    title_suffix, db_legend_mode
+                )
+            else:
+                st.info(f"Decision boundary only for exactly 2 {component_label}s (currently {n_pcs_for_classification}).")
+    
+            # ── Formal visuals ─────────────────────────────────────────────────────
+            render_classification_report(f"KNN (k={k_safe})", y_test_enc, y_pred_knn, unique_y)
+    
+            render_roc_curve(f"KNN (k={k_safe})", best_knn, X_train, X_test,
+                              y_train_enc, y_test_enc, unique_y, has_proba=True)
+    
     # ── DECISION TREE ─────────────────────────────────────────────────────────
     if run_dt:
         best_dt = DecisionTreeClassifier(
@@ -1663,20 +1718,21 @@ else:
         st.plotly_chart(fig_cm_dt, use_container_width=True)
         show_train_test_accuracy(f"Decision Tree (depth={dt_max_depth})", best_dt, X_train, X_test, y_train_enc, y_test_enc, split_data)
 
-        # Accuracy vs PCs sweep — use default-arg capture to avoid closure bug
-        st.subheader(f"Decision Tree Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification})")
-        fig_dtsw, dtsw_sum = accuracy_vs_pcs_plot(
-            lambda md=dt_max_depth, cr=dt_criterion, ms=dt_min_samples: DecisionTreeClassifier(
-                max_depth=md, criterion=cr, min_samples_leaf=ms, random_state=42),
-            f"Decision Tree (depth={dt_max_depth})",
-            X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification
-        )
-        if fig_dtsw:
-            apply_white_theme(fig_dtsw)
-            st.plotly_chart(fig_dtsw, use_container_width=True)
-            st.info(dtsw_sum)
-        else:
-            st.warning(dtsw_sum)
+        # Accuracy vs PCs sweep — skipped in None mode
+        if not is_none_mode:
+            st.subheader(f"Decision Tree Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification})")
+            fig_dtsw, dtsw_sum = accuracy_vs_pcs_plot(
+                lambda md=dt_max_depth, cr=dt_criterion, ms=dt_min_samples: DecisionTreeClassifier(
+                    max_depth=md, criterion=cr, min_samples_leaf=ms, random_state=42),
+                f"Decision Tree (depth={dt_max_depth})",
+                X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification
+            )
+            if fig_dtsw:
+                apply_white_theme(fig_dtsw)
+                st.plotly_chart(fig_dtsw, use_container_width=True)
+                st.info(dtsw_sum)
+            else:
+                st.warning(dtsw_sum)
 
         # Decision boundary (2 components only)
         if n_pcs_for_classification == 2:
