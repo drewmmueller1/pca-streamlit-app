@@ -169,8 +169,7 @@ with st.sidebar.expander("Analysis Mode", expanded=True):
         "Decomposition method:",
         ["PCA (Principal Component Analysis)",
          "PCR (Principal Component Regression)",
-         "PLS (Partial Least Squares)",
-         "None (classification on standardized features only)"],
+         "PLS (Partial Least Squares)"],
         index=0,
         help=(
             "**PCA:** Unsupervised — finds directions of maximum variance in X. "
@@ -405,20 +404,7 @@ component_label = "PC"
 
 n_max_components = min(X_scaled.shape[0] - 1, X_scaled.shape[1])
 
-if analysis_mode == "None (classification on standardized features only)":
-    # Skip decomposition — use standardized features directly for classification
-    X_scores        = X_scaled.copy()
-    n_total_pcs     = X_scores.shape[1]
-    var_ratios      = np.zeros(n_total_pcs)   # no variance decomposition
-    component_label = "Feature"
-    st.info(
-        f"**No decomposition mode:** classification and clustering will run directly on the "
-        f"{n_total_pcs} standardized features. All PCA/scree/loadings plots are skipped. "
-        "Compare the classification accuracy here against PCA/PCR/PLS results to evaluate "
-        "whether dimensionality reduction genuinely helps your dataset."
-    )
-
-elif analysis_mode == "PCA (Principal Component Analysis)":
+if analysis_mode == "PCA (Principal Component Analysis)":
     pca_full   = PCA()
     X_scores   = pca_full.fit_transform(X_scaled)
     var_ratios = pca_full.explained_variance_ratio_
@@ -456,9 +442,8 @@ elif analysis_mode == "PLS (Partial Least Squares)":
     component_label = "LV"
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PIPELINE SUMMARY CARD + DECOMPOSITION PLOTS (skipped in None mode)
+# PIPELINE SUMMARY CARD
 # ══════════════════════════════════════════════════════════════════════════════
-is_none_mode = (analysis_mode == "None (classification on standardized features only)")
 
 cum_var = np.cumsum(var_ratios)
 n_95  = int(np.argmax(cum_var >= 0.95)) + 1 if np.any(cum_var >= 0.95) else n_total_pcs
@@ -477,9 +462,8 @@ std_detail_map = {
     'Z-score':  "Z-score: each variable (column) centered and scaled by population mean and std (population-wise).",
 }
 
-if not is_none_mode:
-    with st.expander(f"📋 {analysis_mode.split('(')[0].strip()} Pipeline Details", expanded=True):
-        st.markdown(f"""
+with st.expander(f"📋 {analysis_mode.split('(')[0].strip()} Pipeline Details", expanded=True):
+    st.markdown(f"""
 **Input:** {X_scaled.shape[0]} samples × {X_scaled.shape[1]} features  
 **Step 1 — Normalization:** {norm_detail_map.get(norm_option, norm_option)}  
 **Step 2 — Standardization:** {std_detail_map.get(preprocess_option, preprocess_option)}  
@@ -488,46 +472,46 @@ if not is_none_mode:
 | Component | Variance Explained | Cumulative |
 |---|---|---|
 """ + "\n".join([
-            f"| {component_label}{i+1} | {var_ratios[i]:.2%} | {cum_var[i]:.2%} |"
-            for i in range(min(5, n_total_pcs))
-        ]) + f"""
+        f"| {component_label}{i+1} | {var_ratios[i]:.2%} | {cum_var[i]:.2%} |"
+        for i in range(min(5, n_total_pcs))
+    ]) + f"""
 
 **95% cumulative variance at:** {component_label}{n_95}  
 **99% cumulative variance at:** {component_label}{n_99}
 """)
-        top_n = min(10, n_total_pcs)
-        fig_sum = go.Figure(go.Bar(
-            x=[f"{component_label}{i+1}" for i in range(top_n)],
-            y=[v*100 for v in var_ratios[:top_n]],
-            marker_color='steelblue', opacity=0.85,
-            text=[f"{v*100:.1f}%" for v in var_ratios[:top_n]], textposition='outside'
-        ))
-        fig_sum.update_layout(
-            title=f"Variance Explained — Top {top_n} {component_label}s",
-            xaxis_title="Component", yaxis_title="% Variance Explained",
-            height=280, margin=dict(t=40,b=30,l=40,r=10),
-            yaxis=dict(range=[0, max(var_ratios[0]*115, 1)])
-        )
-        apply_white_theme(fig_sum)
-        st.plotly_chart(fig_sum, use_container_width=True)
+    top_n = min(10, n_total_pcs)
+    fig_sum = go.Figure(go.Bar(
+        x=[f"{component_label}{i+1}" for i in range(top_n)],
+        y=[v*100 for v in var_ratios[:top_n]],
+        marker_color='steelblue', opacity=0.85,
+        text=[f"{v*100:.1f}%" for v in var_ratios[:top_n]], textposition='outside'
+    ))
+    fig_sum.update_layout(
+        title=f"Variance Explained — Top {top_n} {component_label}s",
+        xaxis_title="Component", yaxis_title="% Variance Explained",
+        height=280, margin=dict(t=40,b=30,l=40,r=10),
+        yaxis=dict(range=[0, max(var_ratios[0]*115, 1)])
+    )
+    apply_white_theme(fig_sum)
+    st.plotly_chart(fig_sum, use_container_width=True)
 
-    # PCA Diagnostics
-    if pca_full is not None:
-        pca_issues = diagnose_pca(X_scores, var_ratios)
-        if pca_issues:
-            st.subheader("⚠️ PCA Diagnostics")
-            st.warning("Issues detected that may cause points to appear collapsed onto an axis.")
-            label_map = {'zero_variance':'Zero Variance','near_zero_variance':'Near-Zero Variance','axis_clustering':'Axis-End Clustering'}
-            for issue in pca_issues:
-                with st.expander(f"⚠️ {component_label}{issue['pc']} — {label_map.get(issue['type'], issue['type'])}", expanded=True):
-                    st.markdown(issue['detail'])
-                    col_data = X_scores[:, issue['pc']-1]
-                    fig_diag = go.Figure(go.Histogram(x=col_data, nbinsx=30, marker_color='salmon', opacity=0.8))
-                    fig_diag.update_layout(title=f"{component_label}{issue['pc']} Score Distribution",
-                                           xaxis_title="Score", yaxis_title="Count",
-                                           height=250, margin=dict(t=35,b=30,l=30,r=10))
-                    apply_white_theme(fig_diag)
-                    st.plotly_chart(fig_diag, use_container_width=True)
+# PCA Diagnostics
+if pca_full is not None:
+    pca_issues = diagnose_pca(X_scores, var_ratios)
+    if pca_issues:
+        st.subheader("⚠️ PCA Diagnostics")
+        st.warning("Issues detected that may cause points to appear collapsed onto an axis.")
+        label_map = {'zero_variance':'Zero Variance','near_zero_variance':'Near-Zero Variance','axis_clustering':'Axis-End Clustering'}
+        for issue in pca_issues:
+            with st.expander(f"⚠️ {component_label}{issue['pc']} — {label_map.get(issue['type'], issue['type'])}", expanded=True):
+                st.markdown(issue['detail'])
+                col_data = X_scores[:, issue['pc']-1]
+                fig_diag = go.Figure(go.Histogram(x=col_data, nbinsx=30, marker_color='salmon', opacity=0.8))
+                fig_diag.update_layout(title=f"{component_label}{issue['pc']} Score Distribution",
+                                       xaxis_title="Score", yaxis_title="Count",
+                                       height=250, margin=dict(t=35,b=30,l=30,r=10))
+                apply_white_theme(fig_diag)
+                st.plotly_chart(fig_diag, use_container_width=True)
 
 # Always set these — used by classification/clustering
 if n_total_pcs >= 2:
@@ -798,9 +782,8 @@ if analysis_mode != "PCA (Principal Component Analysis)" and y_target is not Non
     st.plotly_chart(fig_res, use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SCORES PLOTS, SCREE, LOADINGS, DOWNLOADS — skipped in None mode
+# SCORES PLOTS, SCREE, LOADINGS, DOWNLOADS
 # ══════════════════════════════════════════════════════════════════════════════
-if not is_none_mode:
     if show_2d and n_total_pcs >= 2:
         st.subheader(f"2D {component_label} Scores Plot ({cx_2d} vs {cy_2d})")
         xv, yv = X_scores[:, cx_idx], X_scores[:, cy_idx]
@@ -1101,34 +1084,8 @@ if run_kmeans and X_scores_2d_global is not None:
 # ══════════════════════════════════════════════════════════════════════════════
 st.header("Classification Results")
 
-if is_none_mode:
-    # In None mode: classify on all standardized features, no PC selection
-    X_class = X_scaled
-    if label_mode == "Default Labels":
-        y_selected           = y_global
-        title_suffix         = " (Multi-class)"
-        X_pca_full_for_sweep = X_scaled
-    else:
-        if not selected_for_a or not selected_for_b:
-            st.warning("Select groups to run combined classification.")
-            st.stop()
-        mga = y_global.isin(selected_for_a); mgb = y_global.isin(selected_for_b)
-        mgs = mga | mgb
-        X_class              = X_scaled[mgs]
-        X_pca_full_for_sweep = X_scaled[mgs]
-        y_selected           = np.where(mga[mgs], 0, 1)
-        title_suffix         = ""
-    n_pcs_for_classification = X_class.shape[1]  # use all features
-    st.info(
-        f"**None mode:** classifying directly on {n_pcs_for_classification} standardized features "
-        "(no dimensionality reduction). Accuracy-vs-components sweep is disabled in this mode."
-    )
-    run_classification = True
-
-elif n_total_pcs < n_pcs_for_classification:
+if n_total_pcs < n_pcs_for_classification:
     st.error(f"Not enough components. Selected {n_pcs_for_classification}, only {n_total_pcs} available.")
-    run_classification = False
-
 else:
     X_class = X_scores[:, :n_pcs_for_classification]
     if label_mode == "Default Labels":
@@ -1145,9 +1102,6 @@ else:
         X_pca_full_for_sweep = X_scores[mgs]
         y_selected           = np.where(mga[mgs], 0, 1)
         title_suffix         = ""
-    run_classification = True
-
-if run_classification:
 
     le        = LabelEncoder()
     y_encoded = le.fit_transform(y_selected)
@@ -1593,14 +1547,13 @@ if run_classification:
         st.plotly_chart(fig_cm, use_container_width=True)
         show_train_test_accuracy(da_type, best_da, X_train, X_test, y_train_enc, y_test_enc, split_data)
 
-        if not is_none_mode:
-            st.subheader(f"{da_type} Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification})")
-            if da_type=="LDA":   cf = lambda: LDA()
-            elif da_type=="QDA": cf = lambda rp=0.001: QDA(reg_param=rp)
-            else:                cf = lambda: GaussianNB()
-            fig_sw, sw_sum = accuracy_vs_pcs_plot(cf, da_type, X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification)
-            if fig_sw: apply_white_theme(fig_sw); st.plotly_chart(fig_sw, use_container_width=True); st.info(sw_sum)
-            else: st.warning(sw_sum)
+        st.subheader(f"{da_type} Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification})")
+        if da_type=="LDA":   cf = lambda: LDA()
+        elif da_type=="QDA": cf = lambda rp=0.001: QDA(reg_param=rp)
+        else:                cf = lambda: GaussianNB()
+        fig_sw, sw_sum = accuracy_vs_pcs_plot(cf, da_type, X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification)
+        if fig_sw: apply_white_theme(fig_sw); st.plotly_chart(fig_sw, use_container_width=True); st.info(sw_sum)
+        else: st.warning(sw_sum)
 
         if n_pcs_for_classification == 2:
             st.subheader(f"{da_type} Decision Boundary{title_suffix}")
@@ -1628,10 +1581,10 @@ if run_classification:
             k_safe = max(1, min(k, n_train))
             if k_safe < k:
                 st.warning(
-                        f"K was reduced from {k} to {k_safe} because the training set only has "
-                        f"{n_train} samples. Increase training data or reduce K in the sidebar."
-                    )
-                best_knn = KNeighborsClassifier(n_neighbors=k_safe)
+                    f"K was reduced from {k} to {k_safe} because the training set only has "
+                    f"{n_train} samples. Increase training data or reduce K in the sidebar."
+                )
+            best_knn = KNeighborsClassifier(n_neighbors=k_safe)
             best_knn.fit(X_train, y_train_enc)
             with st.expander("📋 KNN Model Details", expanded=True):
                 st.markdown(f"**K-Nearest Neighbors:** classifies each sample by majority vote among its **{k_safe} nearest "
@@ -1654,13 +1607,12 @@ if run_classification:
             st.plotly_chart(fig_ck, use_container_width=True)
             show_train_test_accuracy(f"KNN (k={k_safe})", best_knn, X_train, X_test, y_train_enc, y_test_enc, split_data)
     
-            if not is_none_mode:
-                st.subheader(f"KNN Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification}, k={k_safe})")
-                fig_ksw, ksw_sum = accuracy_vs_pcs_plot(
-                    lambda k=k_safe: KNeighborsClassifier(n_neighbors=k), f"KNN (k={k_safe})",
-                    X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification)
-                if fig_ksw: apply_white_theme(fig_ksw); st.plotly_chart(fig_ksw, use_container_width=True); st.info(ksw_sum)
-                else: st.warning(ksw_sum)
+            st.subheader(f"KNN Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification}, k={k_safe})")
+            fig_ksw, ksw_sum = accuracy_vs_pcs_plot(
+                lambda k=k_safe: KNeighborsClassifier(n_neighbors=k), f"KNN (k={k_safe})",
+                X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification)
+            if fig_ksw: apply_white_theme(fig_ksw); st.plotly_chart(fig_ksw, use_container_width=True); st.info(ksw_sum)
+            else: st.warning(ksw_sum)
     
             if n_pcs_for_classification == 2:
                 st.subheader(f"KNN Decision Boundary{title_suffix}")
@@ -1718,21 +1670,20 @@ if run_classification:
         st.plotly_chart(fig_cm_dt, use_container_width=True)
         show_train_test_accuracy(f"Decision Tree (depth={dt_max_depth})", best_dt, X_train, X_test, y_train_enc, y_test_enc, split_data)
 
-        # Accuracy vs PCs sweep — skipped in None mode
-        if not is_none_mode:
-            st.subheader(f"Decision Tree Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification})")
-            fig_dtsw, dtsw_sum = accuracy_vs_pcs_plot(
-                lambda md=dt_max_depth, cr=dt_criterion, ms=dt_min_samples: DecisionTreeClassifier(
-                    max_depth=md, criterion=cr, min_samples_leaf=ms, random_state=42),
-                f"Decision Tree (depth={dt_max_depth})",
-                X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification
-            )
-            if fig_dtsw:
-                apply_white_theme(fig_dtsw)
-                st.plotly_chart(fig_dtsw, use_container_width=True)
-                st.info(dtsw_sum)
-            else:
-                st.warning(dtsw_sum)
+        # Accuracy vs PCs sweep
+        st.subheader(f"Decision Tree Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_pcs_for_classification})")
+        fig_dtsw, dtsw_sum = accuracy_vs_pcs_plot(
+            lambda md=dt_max_depth, cr=dt_criterion, ms=dt_min_samples: DecisionTreeClassifier(
+                max_depth=md, criterion=cr, min_samples_leaf=ms, random_state=42),
+            f"Decision Tree (depth={dt_max_depth})",
+            X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_pcs_for_classification
+        )
+        if fig_dtsw:
+            apply_white_theme(fig_dtsw)
+            st.plotly_chart(fig_dtsw, use_container_width=True)
+            st.info(dtsw_sum)
+        else:
+            st.warning(dtsw_sum)
 
         # Decision boundary (2 components only)
         if n_pcs_for_classification == 2:
