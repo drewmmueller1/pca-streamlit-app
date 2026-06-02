@@ -37,9 +37,12 @@ DEFAULT_COLORS = [
 
 def apply_white_theme(fig):
     """
-    Force a white background and black text on any Plotly figure so that
-    downloads are publication-ready regardless of the user's OS/browser theme.
+    Force white background + black text for publication-ready downloads.
+    Only active when the Publication / White Background Mode toggle is ON.
+    When OFF, returns the figure unchanged (browser theme used instead).
     """
+    if not use_white_theme:
+        return fig
     fig.update_layout(
         paper_bgcolor='white',
         plot_bgcolor='white',
@@ -67,7 +70,6 @@ def apply_white_theme(fig):
             title_font=dict(color='black'),
         ),
     )
-    # Also update any secondary axes (subplots use xaxis2, yaxis2, etc.)
     for key in list(fig.layout):
         if key.startswith('xaxis') or key.startswith('yaxis'):
             try:
@@ -652,6 +654,22 @@ plot_color_map = {lbl: color_map_hex.get(lbl, DEFAULT_COLORS[i%len(DEFAULT_COLOR
                   for i,lbl in enumerate(unique_plot_labels)}
 
 # ══════════════════════════════════════════════════════════════════════════════
+# PUBLICATION THEME TOGGLE
+# ══════════════════════════════════════════════════════════════════════════════
+use_white_theme = st.toggle(
+    "📄 Publication / White Background Mode",
+    value=False,
+    help=(
+        "**OFF (default):** plots use your browser's theme (dark mode friendly — "
+        "great for exploratory analysis on screen).\n\n"
+        "**ON:** all plots switch to a white background with black text and light gray gridlines. "
+        "Use this when preparing figures for reports, publications, or presentations "
+        "where a clean white background is required. "
+        "Downloaded plots will match exactly what you see on screen."
+    )
+)
+
+# ══════════════════════════════════════════════════════════════════════════════
 # PCR / PLS REGRESSION DIAGNOSTICS  (shown first so prediction quality is
 # immediately visible before exploring the component space)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -772,37 +790,51 @@ if show_2d and n_total_pcs >= 2:
     mpl_colors = [plot_color_map.get(l, DEFAULT_COLORS[i%len(DEFAULT_COLORS)]) for i,l in enumerate(ul2d)]
     if legend_separate:
         fig_m, ax_m = plt.subplots(figsize=(8,6))
-        fig_m.patch.set_facecolor('white'); ax_m.set_facecolor('white')
+        if use_white_theme:
+            fig_m.patch.set_facecolor('white'); ax_m.set_facecolor('white')
         for lbl, col in zip(ul2d, mpl_colors):
             m = df_2d['label']==lbl
             ax_m.scatter(df_2d[m][cx_2d], df_2d[m][cy_2d], c=col, label=lbl, s=50)
-        ax_m.set_xlabel(f"{cx_2d} ({xvar:.1%})", color='black')
-        ax_m.set_ylabel(f"{cy_2d} ({yvar:.1%})", color='black')
-        ax_m.set_title(f"2D {component_label} Scores", color='black')
-        ax_m.tick_params(colors='black'); ax_m.grid(True, alpha=0.3, color='#cccccc')
-        for sp in ax_m.spines.values(): sp.set_edgecolor('#cccccc')
+        lbl_kw = dict(color='black') if use_white_theme else {}
+        ax_m.set_xlabel(f"{cx_2d} ({xvar:.1%})", **lbl_kw)
+        ax_m.set_ylabel(f"{cy_2d} ({yvar:.1%})", **lbl_kw)
+        ax_m.set_title(f"2D {component_label} Scores", **lbl_kw)
+        if use_white_theme:
+            ax_m.tick_params(colors='black')
+            ax_m.grid(True, alpha=0.3, color='#cccccc')
+            for sp in ax_m.spines.values(): sp.set_edgecolor('#cccccc')
+        else:
+            ax_m.grid(True, alpha=0.3)
         st.pyplot(fig_m, bbox_inches='tight'); plt.close(fig_m)
         fig_lg, ax_lg = plt.subplots(figsize=(2, len(ul2d)*0.5))
-        fig_lg.patch.set_facecolor('white'); ax_lg.set_facecolor('white')
+        if use_white_theme:
+            fig_lg.patch.set_facecolor('white'); ax_lg.set_facecolor('white')
         ax_lg.axis('off')
         handles = [plt.Line2D([0],[0],marker='o',color='w',markerfacecolor=c,markersize=8,label=l)
                    for l,c in zip(ul2d,mpl_colors)]
         leg = ax_lg.legend(handles=handles, loc='center')
-        for txt in leg.get_texts(): txt.set_color('black')
+        if use_white_theme:
+            for txt in leg.get_texts(): txt.set_color('black')
         st.pyplot(fig_lg, bbox_inches='tight'); plt.close(fig_lg)
     else:
         fig, ax = plt.subplots(figsize=(10,6))
-        fig.patch.set_facecolor('white'); ax.set_facecolor('white')
+        if use_white_theme:
+            fig.patch.set_facecolor('white'); ax.set_facecolor('white')
         for lbl, col in zip(ul2d, mpl_colors):
             m = df_2d['label']==lbl
             ax.scatter(df_2d[m][cx_2d], df_2d[m][cy_2d], c=col, label=lbl, s=50)
-        ax.set_xlabel(f"{cx_2d} ({xvar:.1%})", color='black')
-        ax.set_ylabel(f"{cy_2d} ({yvar:.1%})", color='black')
-        ax.set_title(f"2D {component_label} Scores Plot", color='black')
-        ax.tick_params(colors='black'); ax.grid(True, alpha=0.3, color='#cccccc')
-        for sp in ax.spines.values(): sp.set_edgecolor('#cccccc')
-        leg = ax.legend()
-        for txt in leg.get_texts(): txt.set_color('black')
+        lbl_kw = dict(color='black') if use_white_theme else {}
+        ax.set_xlabel(f"{cx_2d} ({xvar:.1%})", **lbl_kw)
+        ax.set_ylabel(f"{cy_2d} ({yvar:.1%})", **lbl_kw)
+        ax.set_title(f"2D {component_label} Scores Plot", **lbl_kw)
+        if use_white_theme:
+            ax.tick_params(colors='black')
+            ax.grid(True, alpha=0.3, color='#cccccc')
+            for sp in ax.spines.values(): sp.set_edgecolor('#cccccc')
+            leg = ax.legend()
+            for txt in leg.get_texts(): txt.set_color('black')
+        else:
+            ax.legend(); ax.grid(True, alpha=0.3)
         st.pyplot(fig, bbox_inches='tight'); plt.close(fig)
 elif show_2d:
     st.warning("Need at least 2 components for 2D plot.")
@@ -1666,18 +1698,21 @@ else:
         st.caption(f"Actual depth: {actual_depth} | Leaves: {n_leaves} | "
                    f"Features used: {best_dt.n_features_in_} {component_label}s")
 
-        # Visual tree diagram — white background, no impurity values
+        # Visual tree diagram
         fig_tree, ax_tree = plt.subplots(figsize=(max(10, n_leaves * 1.5), max(5, actual_depth * 2)))
-        fig_tree.patch.set_facecolor('white')
-        ax_tree.set_facecolor('white')
+        if use_white_theme:
+            fig_tree.patch.set_facecolor('white')
+            ax_tree.set_facecolor('white')
         plot_tree(
             best_dt,
             feature_names=[f"{component_label}{i+1}" for i in range(n_pcs_for_classification)],
             class_names=[str(c) for c in unique_y],
             filled=True, rounded=True, fontsize=9, ax=ax_tree,
-            impurity=False,     # hide the Gini/entropy value from each node
+            impurity=True,   # show Gini/entropy split criterion
+            value=False,     # hide "value = [n, n, ...]" class distribution counts
         )
-        ax_tree.set_title(f"Decision Tree (depth={actual_depth}, criterion={dt_criterion})", fontsize=11, color='black')
+        title_kw = dict(color='black') if use_white_theme else {}
+        ax_tree.set_title(f"Decision Tree (depth={actual_depth}, criterion={dt_criterion})", fontsize=11, **title_kw)
         st.pyplot(fig_tree, bbox_inches='tight'); plt.close(fig_tree)
 
         # Feature importance bar chart
