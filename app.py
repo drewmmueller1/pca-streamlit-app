@@ -8,7 +8,7 @@ from sklearn.cluster import KMeans
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis as QDA
 from sklearn.naive_bayes import GaussianNB
-from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier, export_text, plot_tree
 from sklearn.model_selection import train_test_split, cross_val_score, KFold
 from sklearn.metrics import confusion_matrix, accuracy_score, silhouette_score, mean_squared_error
 import plotly.express as px
@@ -542,6 +542,19 @@ with st.sidebar.expander("Classification Options", expanded=False):
         da_type = "LDA"; show_ellipse = False; ellipse_std = 2.0
     run_knn = st.checkbox("Run KNN")
     k       = st.slider("K value", 1, 20, 5) if run_knn else 5
+    run_dt  = st.checkbox("Run Decision Tree")
+    if run_dt:
+        dt_max_depth    = st.slider("Max tree depth", 1, 10, 3,
+                                     help="Limits how deep the tree grows. Shallower = simpler, less overfit. "
+                                          "For ≤75 samples, depth 2–4 is usually best.")
+        dt_criterion    = st.selectbox("Split criterion", ["gini","entropy"], index=0,
+                                        help="**Gini:** measures impurity — fast and works well in practice.\n\n"
+                                             "**Entropy:** information gain — can produce slightly different splits.")
+        dt_min_samples  = st.slider("Min samples per leaf", 1, 10, 2,
+                                     help="Minimum number of samples required at a leaf node. "
+                                          "Higher values prevent over-fitting on small datasets.")
+    else:
+        dt_max_depth = 3; dt_criterion = "gini"; dt_min_samples = 2
     run_kmeans = st.checkbox("Run K-Means Clustering")
     if run_kmeans:
         auto_optimize_k      = st.checkbox("Auto-optimize K", value=False)
@@ -1175,12 +1188,122 @@ else:
         else:
             st.info(f"Decision boundary only for exactly 2 {component_label}s (currently {n_pcs_for_classification}).")
 
+    # ── DECISION TREE ─────────────────────────────────────────────────────────
+    if run_dt:
+        best_dt = DecisionTreeClassifier(
+            max_depth=dt_max_depth,
+            criterion=dt_criterion,
+            min_samples_leaf=dt_min_samples,
+            random_state=42
+        )
+        best_dt.fit(X_train, y_train_enc)
+
+        with st.expander("📋 Decision Tree Model Details", expanded=True):
+            st.markdown(
+                "**Decision Tree:** recursively partitions the component space by finding the single "
+                "split threshold on one component at a time that best separates classes. Each internal "
+                "node is a yes/no question (`PCn ≤ threshold`); each leaf assigns a class. "
+                "Fast, interpretable, and handles multi-class natively with no distributional assumptions. "
+                "Prone to over-fitting on small datasets — use `max_depth` and `min_samples_leaf` to control."
+            )
+            st.markdown(
+                f"**Parameters:** `max_depth`=`{dt_max_depth}`, `criterion`=`{dt_criterion}`, "
+                f"`min_samples_leaf`=`{dt_min_samples}`, `random_state`=`42`"
+            )
+            st.markdown(
+                f"**Input:** {X_train.shape[0]} training samples × {n_pcs_for_classification} {component_label}s  \n"
+                f"**Classes:** {list(unique_y)}  \n"
+                f"**Split:** " + (f"Yes — {int((1-test_size)*100)}% train / {int(test_size*100)}% test"
+                                   if split_data else "No split — full dataset for train and eval")
+            )
+
+        y_pred_dt = best_dt.predict(X_test)
+        acc_dt    = accuracy_score(y_test_enc, y_pred_dt)
+
+        st.subheader(f"Decision Tree Confusion Matrix{title_suffix}")
+        cm_dt = confusion_matrix(y_test_enc, y_pred_dt)
+        fig_cm_dt = px.imshow(cm_dt, text_auto=True, x=list(unique_y), y=list(unique_y),
+                               color_continuous_scale='Blues',
+                               title=f"Decision Tree Confusion Matrix{title_suffix}")
+        st.plotly_chart(fig_cm_dt, use_container_width=True)
+        st.write(f"**Accuracy at {n_pcs_for_classification} {component_label}s:** {acc_dt:.3f}")
+
+        # Accuracy vs PCs sweep
+        st.subheader(f"Decision Tree Accuracy vs. Number of {component_label}s ({component_label}2 → {component_label}{n_scree})")
+        fig_dtsw, dtsw_sum = accuracy_vs_pcs_plot(
+            lambda: DecisionTreeClassifier(max_depth=dt_max_depth, criterion=dt_criterion,
+                                           min_samples_leaf=dt_min_samples, random_state=42),
+            f"Decision Tree (depth={dt_max_depth})",
+            X_pca_full_for_sweep, y_encoded, n_pcs_for_classification, n_scree
+        )
+        if fig_dtsw:
+            st.plotly_chart(fig_dtsw, use_container_width=True)
+            st.info(dtsw_sum)
+        else:
+            st.warning(dtsw_sum)
+
+        # Decision boundary (2 components only)
+        if n_pcs_for_classification == 2:
+            st.subheader(f"Decision Tree Decision Boundary{title_suffix}")
+            try:
+                from mlxtend.plotting import plot_decision_regions
+                fig_dtdb, ax_dtdb = plt.subplots(figsize=(8, 6))
+                plot_decision_regions(X_class, y_encoded, clf=best_dt, legend=2, ax=ax_dtdb)
+                ax_dtdb.set_xlabel(f"{component_label}1"); ax_dtdb.set_ylabel(f"{component_label}2")
+                ax_dtdb.set_title(f"Decision Tree Boundary{title_suffix} (depth={dt_max_depth})")
+                st.pyplot(fig_dtdb); plt.close(fig_dtdb)
+            except Exception as e:
+                st.warning(f"Decision boundary plot failed: {e}")
+        else:
+            st.info(f"Decision boundary only available for exactly 2 {component_label}s (currently {n_pcs_for_classification}).")
+
+        # Tree visualization
+        st.subheader("Decision Tree Structure")
+        actual_depth = best_dt.get_depth()
+        n_leaves     = best_dt.get_n_leaves()
+        st.caption(f"Actual depth: {actual_depth} | Leaves: {n_leaves} | "
+                   f"Features used: {best_dt.n_features_in_} {component_label}s")
+
+        # Visual tree diagram
+        fig_tree, ax_tree = plt.subplots(figsize=(max(10, n_leaves * 1.5), max(5, actual_depth * 2)))
+        plot_tree(
+            best_dt,
+            feature_names=[f"{component_label}{i+1}" for i in range(n_pcs_for_classification)],
+            class_names=[str(c) for c in unique_y],
+            filled=True, rounded=True, fontsize=9, ax=ax_tree
+        )
+        ax_tree.set_title(f"Decision Tree (depth={actual_depth}, criterion={dt_criterion})", fontsize=11)
+        st.pyplot(fig_tree); plt.close(fig_tree)
+
+        # Text rules — easy to copy/share
+        st.subheader("Decision Rules (Text)")
+        tree_rules = export_text(
+            best_dt,
+            feature_names=[f"{component_label}{i+1}" for i in range(n_pcs_for_classification)]
+        )
+        st.code(tree_rules, language="text")
+
+        # Feature importance bar chart
+        st.subheader(f"Feature Importance ({component_label}s ranked by split contribution)")
+        importances = best_dt.feature_importances_
+        feat_names  = [f"{component_label}{i+1}" for i in range(n_pcs_for_classification)]
+        df_imp = pd.DataFrame({'Component': feat_names, 'Importance': importances})
+        df_imp = df_imp.sort_values('Importance', ascending=False)
+        fig_imp = px.bar(df_imp, x='Component', y='Importance',
+                          title=f"Decision Tree Feature Importances (Gini/Entropy impurity reduction)",
+                          color='Importance', color_continuous_scale='Blues',
+                          labels={'Importance': 'Relative Importance'})
+        fig_imp.update_layout(height=350, showlegend=False)
+        fig_imp.update_coloraxes(showscale=False)
+        st.plotly_chart(fig_imp, use_container_width=True)
+        st.caption("Importance = total reduction in impurity weighted by the number of samples reaching each split. "
+                   "Values sum to 1.0 across all components used.")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # FOOTER
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 st.caption(
-    "v15 — Removed pre-computed PC mode; normalization before standardization; "
-    "IS uses row label for per-variable column normalization; SNV/Z-score guidance text; "
-    "PCA / PCR / PLS toggle with CV/MSE, predicted vs actual, residuals, and full downloads."
+    "v16 — Decision Tree classifier: confusion matrix, accuracy-vs-PCs sweep, "
+    "decision boundary, visual tree diagram, text rules, and feature importance chart."
 )
