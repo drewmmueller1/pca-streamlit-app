@@ -143,7 +143,7 @@ if uploaded_file is None:
 
 df = pd.read_csv(uploaded_file)
 st.success(f"Loaded dataset: {df.shape[0]} rows × {df.shape[1]} columns")
-st.subheader("Data Overview")
+st.subheader("Raw Data Preview")
 st.dataframe(df.head())
 if 'label' not in df.columns:
     st.warning("No 'label' column found — will be generated from column names if Transpose is enabled.")
@@ -282,53 +282,58 @@ X = X_raw.copy()
 
 if norm_option != 'None':
     if norm_option == 'Unit Area (Total Sum)':
-        for i in range(X.shape[0]):
-            s = X.iloc[i].sum()
-            if s != 0:
-                X.iloc[i] = X.iloc[i] / s
-            else:
-                st.warning(f"Row {i+1} sum = 0 — Unit Area skipped for this sample.")
+        # Row sums — vectorized: divide each row by its own total
+        row_sums = X.sum(axis=1)                      # Series, one value per sample
+        zero_rows = row_sums[row_sums == 0].index
+        if len(zero_rows) > 0:
+            st.warning(f"{len(zero_rows)} sample(s) have row sum = 0 — Unit Area skipped for those rows.")
+        # Replace zeros with 1 so division is a no-op for zero-sum rows
+        row_sums_safe = row_sums.replace(0, 1)
+        X = X.div(row_sums_safe, axis=0)
         st.success("Normalization applied: Unit Area / Total Sum (per sample)")
 
     elif norm_option == 'Unit Vector (L2 Norm)':
-        for i in range(X.shape[0]):
-            l2 = np.sqrt(np.sum(X.iloc[i]**2))
-            if l2 > 0:
-                X.iloc[i] = X.iloc[i] / l2
-            else:
-                st.warning(f"Row {i+1} L2 = 0 — Unit Vector skipped for this sample.")
+        # L2 norm per row — vectorized
+        row_l2 = np.sqrt((X ** 2).sum(axis=1))        # Series, one value per sample
+        zero_rows = row_l2[row_l2 == 0].index
+        if len(zero_rows) > 0:
+            st.warning(f"{len(zero_rows)} sample(s) have L2 = 0 — Unit Vector skipped for those rows.")
+        row_l2_safe = row_l2.replace(0, 1)
+        X = X.div(row_l2_safe, axis=0)
         st.success("Normalization applied: Unit Vector / L2 Norm (per sample)")
 
     elif norm_option == 'Min-Max (per sample)':
-        for i in range(X.shape[0]):
-            rmin, rmax = X.iloc[i].min(), X.iloc[i].max()
-            if rmax > rmin:
-                X.iloc[i] = (X.iloc[i] - rmin) / (rmax - rmin)
-            else:
-                st.warning(f"Row {i+1} is constant — Min-Max skipped for this sample.")
+        # Min and max per row — vectorized
+        row_min  = X.min(axis=1)
+        row_max  = X.max(axis=1)
+        row_span = row_max - row_min
+        const_rows = row_span[row_span == 0].index
+        if len(const_rows) > 0:
+            st.warning(f"{len(const_rows)} sample(s) are constant — Min-Max skipped for those rows.")
+        row_span_safe = row_span.replace(0, 1)
+        X = X.sub(row_min, axis=0).div(row_span_safe, axis=0)
         st.success("Normalization applied: Min-Max (per sample)")
 
     elif norm_option == 'Internal Standard':
         if is_label_val is None:
             st.error("Select an Internal Standard label in the sidebar.")
             st.stop()
-        # Identify IS rows by label
         is_mask = (y_raw == is_label_val)
         if is_mask.sum() == 0:
             st.error(f"No rows found with label '{is_label_val}'.")
             st.stop()
-        # Average IS values across replicates — one IS value per variable (column)
-        is_values = X.loc[is_mask].mean(axis=0)   # shape: (n_features,)
+        # Average IS rows → one IS value per variable (column)
+        is_values = X.loc[is_mask].mean(axis=0)       # Series, one value per column
         zero_cols = is_values[is_values == 0].index.tolist()
         if zero_cols:
             st.warning(
                 f"{len(zero_cols)} variable(s) have IS value = 0 and will NOT be normalized: "
                 f"{zero_cols[:5]}{'...' if len(zero_cols) > 5 else ''}"
             )
-        # Divide every sample by the IS value for each column independently
-        for col in X.columns:
-            if is_values[col] != 0:
-                X[col] = X[col] / is_values[col]
+        # Divide each column by its IS value (leave zero-IS columns untouched)
+        is_values_safe = is_values.copy()
+        is_values_safe[is_values_safe == 0] = 1       # no-op divisor for zero-IS columns
+        X = X.div(is_values_safe, axis=1)
         st.success(
             f"Normalization applied: Internal Standard "
             f"(IS label = '{is_label_val}', {is_mask.sum()} IS row(s) averaged per variable)"
@@ -340,16 +345,15 @@ y = y_raw.copy()
 # STANDARDIZATION (applied after normalization)
 # ══════════════════════════════════════════════════════════════════════════════
 if preprocess_option == 'SNV':
-    # Per-sample (row-wise): center and scale each sample by its own mean and std
-    X_proc = X.copy()
-    for i in range(X_proc.shape[0]):
-        row_mean = X_proc.iloc[i].mean()
-        row_std  = X_proc.iloc[i].std()
-        if row_std > 0:
-            X_proc.iloc[i] = (X_proc.iloc[i] - row_mean) / row_std
-        else:
-            st.warning(f"Row {i+1} zero variance — SNV skipped for this sample.")
-    X_scaled = X_proc.values
+    # Per-sample (row-wise): center and scale each sample by its own mean and std — vectorized
+    row_mean = X.mean(axis=1)
+    row_std  = X.std(axis=1)
+    zero_std = row_std[row_std == 0].index
+    if len(zero_std) > 0:
+        st.warning(f"{len(zero_std)} sample(s) have zero variance — SNV skipped for those rows.")
+    row_std_safe = row_std.replace(0, 1)
+    X_snv    = X.sub(row_mean, axis=0).div(row_std_safe, axis=0)
+    X_scaled = X_snv.values
     st.success("Standardization applied: SNV (per-sample, row-wise)")
 
 elif preprocess_option == 'Z-score':
@@ -363,6 +367,36 @@ else:
     scaler   = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     st.info("No standardization selected — Z-score applied automatically before decomposition to ensure equal feature weighting.")
+
+# ── Processed Data Overview ───────────────────────────────────────────────────
+# Build a human-readable label for what was applied
+_steps = []
+if norm_option != 'None':
+    _steps.append(norm_option)
+if preprocess_option != 'None':
+    _steps.append(f"{preprocess_option} standardization")
+else:
+    _steps.append("Z-score standardization (auto-applied)")
+_pipeline_label = " → ".join(_steps)
+
+st.subheader("Processed Data Overview")
+st.caption(
+    f"Pipeline applied: **{_pipeline_label}**. "
+    "This table shows the exact values that will be passed to PCA / PCR / PLS. "
+    "All values are shown before the Data Filtering exclusion step below."
+)
+# Reconstruct as a readable DataFrame: label column + processed feature columns
+_X_processed_df = pd.DataFrame(
+    X_scaled,
+    columns=X.columns,
+    index=X.index
+)
+_X_processed_df.insert(0, 'label', y_raw)   # use y_raw (before filtering) to match full index
+st.dataframe(_X_processed_df.head(10).style.format("{:.4f}", subset=X.columns.tolist()))
+st.caption(
+    f"Showing first 10 rows of {X_scaled.shape[0]} samples × {X_scaled.shape[1]} features. "
+    "Download the full processed dataset from the Download Results section below."
+)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DATA FILTERING
