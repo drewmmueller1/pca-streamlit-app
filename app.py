@@ -278,7 +278,9 @@ if norm_option == 'Internal Standard':
 # ══════════════════════════════════════════════════════════════════════════════
 # NORMALIZATION (per-sample, before standardization)
 # ══════════════════════════════════════════════════════════════════════════════
-X = X_raw.copy()
+# Always cast to float64 first — integer columns (e.g. peak areas) can overflow
+# when squared (L2) or produce integer-division truncation in other methods.
+X = X_raw.astype(float).copy()
 
 if norm_option != 'None':
     if norm_option == 'Unit Area (Total Sum)':
@@ -1017,6 +1019,17 @@ if show_loadings:
 # DOWNLOADS
 # ══════════════════════════════════════════════════════════════════════════════
 st.subheader("Download Results")
+
+# Processed (normalized + standardized) data — always available
+_X_dl = pd.DataFrame(X_scaled, columns=X.columns)
+_X_dl.insert(0, 'label', y.values)
+st.download_button(
+    "⬇ Processed Data CSV (normalized + standardized)",
+    _X_dl.to_csv(index=False),
+    "processed_data.csv", "text/csv",
+    help="The exact values used as input to PCA / PCR / PLS — after all normalization and standardization steps."
+)
+
 col1, col2 = st.columns(2)
 
 with col1:
