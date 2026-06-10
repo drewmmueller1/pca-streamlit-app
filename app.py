@@ -18,6 +18,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import matplotlib.pyplot as plt
+from scipy.cluster.hierarchy import linkage, dendrogram, fcluster
+from scipy.spatial.distance import pdist, squareform
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -228,6 +230,52 @@ with st.sidebar.expander("Normalization Options", expanded=True):
     )
 
 # ══════════════════════════════════════════════════════════════════════════════
+# SIDEBAR – SPARSE / BINARY ANALYSIS (Hierarchical clustering + presence heatmap)
+# ══════════════════════════════════════════════════════════════════════════════
+with st.sidebar.expander("Sparse / Binary Analysis", expanded=False):
+    run_hierarchical = st.checkbox(
+        "Run Hierarchical Clustering + Presence Heatmap", value=False,
+        help=(
+            "Designed for sparse presence/absence data (e.g. drug profiling where most "
+            "compounds are zero in most samples). Runs on raw detected/not-detected patterns "
+            "BEFORE any standardization, so results are valid regardless of standardization choice."
+        )
+    )
+    if run_hierarchical:
+        hc_distance = st.radio(
+            "Binary distance metric:",
+            ["Jaccard", "Dice"],
+            index=0,
+            help=(
+                "**Jaccard:** treats shared presence and shared absence symmetrically — "
+                "use when a compound being absent in both samples is not meaningful similarity.\n\n"
+                "**Dice:** gives double weight to shared presences (co-occurring compounds) — "
+                "use when two samples sharing the same detected compounds matters more than "
+                "them both lacking a compound."
+            )
+        )
+        hc_linkage = st.selectbox(
+            "Linkage method:",
+            ["average", "complete", "ward", "single"],
+            index=0,
+            help="How clusters are merged. 'average' and 'complete' work well for binary distances. "
+                 "'ward' minimizes within-cluster variance (works on the distance matrix here)."
+        )
+        hc_n_clusters = st.slider(
+            "Number of clusters to highlight", 2, 15, 4,
+            help="Colors the dendrogram and heatmap row groups by this many clusters."
+        )
+        hc_presence_threshold = st.number_input(
+            "Presence threshold (value > this = 'detected')",
+            value=0.0, step=1.0,
+            help="Any value strictly greater than this is treated as 'present/detected' (1), "
+                 "everything else as 'absent' (0). Usually 0 for peak-area data."
+        )
+    else:
+        hc_distance = "Jaccard"; hc_linkage = "average"
+        hc_n_clusters = 4; hc_presence_threshold = 0.0
+
+# ══════════════════════════════════════════════════════════════════════════════
 # TRANSPOSE
 # ══════════════════════════════════════════════════════════════════════════════
 if transpose_data:
@@ -254,6 +302,149 @@ y_raw = df['label']
 if X_raw.empty:
     st.error("No numerical columns found.")
     st.stop()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SPARSE / BINARY ANALYSIS — runs on RAW data, before any normalization/standardization
+# ══════════════════════════════════════════════════════════════════════════════
+if run_hierarchical:
+    st.header("Hierarchical Clustering & Presence/Absence Analysis")
+    st.caption(
+        "Computed on the raw presence/absence pattern of each variable — independent of "
+        "normalization and standardization settings. Ideal for sparse data where most values are zero."
+    )
+
+    # Build presence/absence (binary) matrix
+    X_binary = (X_raw.astype(float) > hc_presence_threshold).astype(int)
+
+    # Drop variables that are all-zero or all-one (no information, break binary distances)
+    col_sums = X_binary.sum(axis=0)
+    informative_cols = col_sums[(col_sums > 0) & (col_sums < X_binary.shape[0])].index
+    n_dropped = X_binary.shape[1] - len(informative_cols)
+    X_binary_info = X_binary[informative_cols]
+
+    # Drop samples that have zero detections (can't compute binary distance)
+    row_sums = X_binary_info.sum(axis=1)
+    valid_rows = row_sums[row_sums > 0].index
+    n_empty_samples = X_binary_info.shape[0] - len(valid_rows)
+    X_binary_valid = X_binary_info.loc[valid_rows]
+    y_valid        = y_raw.loc[valid_rows]
+
+    info_bits = []
+    info_bits.append(f"{X_binary_valid.shape[0]} samples × {X_binary_valid.shape[1]} informative variables")
+    if n_dropped > 0:
+        info_bits.append(f"{n_dropped} non-informative variable(s) dropped (all-present or all-absent)")
+    if n_empty_samples > 0:
+        info_bits.append(f"{n_empty_samples} sample(s) with no detections dropped")
+    st.info(" | ".join(info_bits))
+
+    if X_binary_valid.shape[0] < 3:
+        st.warning("Fewer than 3 valid samples after filtering — cannot cluster.")
+    else:
+        # Distance metric
+        metric_name = hc_distance.lower()  # 'jaccard' or 'dice'
+        try:
+            dist_condensed = pdist(X_binary_valid.values, metric=metric_name)
+            # Guard against NaN distances (can occur if two rows are identical all-zero, already filtered)
+            if np.isnan(dist_condensed).any():
+                dist_condensed = np.nan_to_num(dist_condensed, nan=1.0)
+
+            # Linkage
+            if hc_linkage == "ward":
+                Z = linkage(dist_condensed, method="ward")
+            else:
+                Z = linkage(dist_condensed, method=hc_linkage)
+
+            # Cluster assignments
+            cluster_ids = fcluster(Z, t=hc_n_clusters, criterion='maxclust')
+
+            # ── Dendrogram ────────────────────────────────────────────────────
+            st.subheader(f"Dendrogram ({hc_distance} distance, {hc_linkage} linkage)")
+            fig_dendro, ax_dendro = plt.subplots(figsize=(max(10, X_binary_valid.shape[0] * 0.12), 6))
+            if use_white_theme:
+                fig_dendro.patch.set_facecolor('white'); ax_dendro.set_facecolor('white')
+            # color_threshold to highlight the requested number of clusters
+            color_thresh = Z[-(hc_n_clusters-1), 2] if hc_n_clusters > 1 and len(Z) >= hc_n_clusters-1 else None
+            dendrogram(
+                Z,
+                labels=y_valid.values,
+                color_threshold=color_thresh,
+                ax=ax_dendro,
+                leaf_rotation=90,
+                leaf_font_size=7,
+            )
+            ax_dendro.set_title(
+                f"Hierarchical Clustering — {hc_distance} distance, {hc_linkage} linkage",
+                color='black' if use_white_theme else None
+            )
+            ax_dendro.set_ylabel("Distance", color='black' if use_white_theme else None)
+            if use_white_theme:
+                ax_dendro.tick_params(colors='black')
+                for sp in ax_dendro.spines.values(): sp.set_edgecolor('#cccccc')
+            st.pyplot(fig_dendro, bbox_inches='tight'); plt.close(fig_dendro)
+            st.caption(
+                f"Samples are grouped by similarity of their detected-compound profiles using "
+                f"**{hc_distance}** distance. "
+                + ("Dice gives 2× weight to shared detections (co-occurring compounds) relative to Jaccard."
+                   if hc_distance == "Dice"
+                   else "Jaccard weights shared presence and shared absence symmetrically.")
+            )
+
+            # ── Presence/Absence Heatmap (ordered by clustering) ──────────────
+            st.subheader("Presence/Absence Heatmap (ordered by hierarchical clustering)")
+            # Get leaf order from the dendrogram so heatmap rows match the tree
+            dendro_order = dendrogram(Z, no_plot=True)['leaves']
+            X_ordered    = X_binary_valid.iloc[dendro_order]
+            y_ordered    = y_valid.iloc[dendro_order]
+
+            # Also order columns (variables) by how often they're detected, for readability
+            col_order = X_ordered.sum(axis=0).sort_values(ascending=False).index
+            X_ordered = X_ordered[col_order]
+
+            fig_heat = go.Figure(go.Heatmap(
+                z=X_ordered.values,
+                x=list(X_ordered.columns),
+                y=[f"{lbl}" for lbl in y_ordered.values],
+                colorscale=[[0, '#f7f7f7'], [1, '#2166ac']],
+                showscale=True,
+                colorbar=dict(title="Detected", tickvals=[0, 1], ticktext=["Absent", "Present"]),
+                hovertemplate="Sample: %{y}<br>Variable: %{x}<br>%{z}<extra></extra>",
+                xgap=0.5, ygap=0.2,
+            ))
+            fig_heat.update_layout(
+                title="Compound Presence/Absence Across Samples (clustered)",
+                xaxis_title="Variables (compounds)",
+                yaxis_title="Samples (ordered by dendrogram)",
+                height=max(500, X_ordered.shape[0] * 12),
+                xaxis=dict(tickangle=45, tickfont=dict(size=8)),
+                yaxis=dict(tickfont=dict(size=6), autorange='reversed'),
+            )
+            apply_white_theme(fig_heat)
+            st.plotly_chart(fig_heat, use_container_width=True)
+            st.caption(
+                "Rows (samples) are ordered to match the dendrogram above, so clustered samples "
+                "appear adjacent. Columns (compounds) are ordered by detection frequency. "
+                "Blue = compound detected in that sample; gray = not detected."
+            )
+
+            # ── Cluster membership table + download ───────────────────────────
+            st.subheader("Cluster Assignments")
+            df_clusters = pd.DataFrame({
+                'Sample': y_valid.values,
+                'Cluster': cluster_ids,
+                'N_compounds_detected': X_binary_valid.sum(axis=1).values,
+            }).sort_values(['Cluster', 'Sample'])
+            st.dataframe(df_clusters, use_container_width=True, hide_index=True)
+            st.download_button(
+                "⬇ Cluster Assignments CSV",
+                df_clusters.to_csv(index=False),
+                "hierarchical_clusters.csv", "text/csv",
+                help="Cluster ID and compound count for each sample."
+            )
+
+        except Exception as e:
+            st.error(f"Hierarchical clustering failed: {e}")
+
+    st.markdown("---")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # INTERNAL STANDARD ROW SELECTOR
@@ -1803,6 +1994,6 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 st.caption(
-    "v25 — Publication mode toggle (after Label Config): white bg + black text when ON, browser theme when OFF. "
-    "DT diagram: value=[n] hidden, impurity retained. All matplotlib and Plotly figures respect toggle."
+    "v26 — Sparse/Binary Analysis: hierarchical clustering (Jaccard/Dice) with dendrogram "
+    "and presence/absence heatmap, computed on raw data before normalization."
 )
