@@ -693,13 +693,18 @@ if run_hierarchical:
             ax_heat.yaxis.tick_right(); ax_heat.yaxis.set_label_position('right')
             if txt_color: ax_heat.tick_params(colors=txt_color)
 
+            # Legend: presence/absence + one entry per cluster color
             legend_elems = [
                 Patch(facecolor='#2166ac', label='Detected'),
                 Patch(facecolor='#f3f3f3', edgecolor='#cccccc', label='Not detected'),
             ]
+            # Add a separator-style spacer then the cluster color entries
+            for ci in range(eff_n_clusters):
+                legend_elems.append(Patch(facecolor=cluster_hex[ci], label=f'Cluster {ci+1}'))
             leg = ax_heat.legend(handles=legend_elems, loc='upper left',
                                  bbox_to_anchor=(1.06, 1.0), fontsize=8,
-                                 frameon=True, title="Presence")
+                                 frameon=True, title="Presence / Cluster",
+                                 ncol=1 if eff_n_clusters <= 15 else 2)
             if txt_color:
                 leg.get_title().set_color(txt_color)
                 for t in leg.get_texts(): t.set_color(txt_color)
@@ -712,8 +717,9 @@ if run_hierarchical:
             )
             st.pyplot(fig_cm, bbox_inches='tight'); plt.close(fig_cm)
             st.caption(
-                "Left: dendrogram. Middle strip: cluster membership (colors match your selection). "
+                "Left: dendrogram. Middle strip: cluster membership (colored). "
                 "Right: presence/absence heatmap aligned to the dendrogram rows. "
+                "The legend lists each cluster's color. "
                 + ("" if show_sample_labels else
                    f"Sample labels hidden ({n_samples_hc} too many) — see Cluster Assignments below.")
             )
@@ -722,9 +728,12 @@ if run_hierarchical:
             # Cluster membership table + download
             # ══════════════════════════════════════════════════════════════════
             st.subheader("Cluster Assignments")
+            # Map each cluster id (1..k) to its hex color for the table/CSV
+            cluster_color_map = {ci + 1: cluster_hex[ci] for ci in range(eff_n_clusters)}
             df_clusters = pd.DataFrame({
                 'Sample': y_valid.values,
                 'Cluster': cluster_ids,
+                'Cluster_Color': [cluster_color_map.get(c, '#000000') for c in cluster_ids],
                 'N_compounds_detected': X_binary_valid.sum(axis=1).values,
             }).sort_values(['Cluster', 'Sample'])
             st.dataframe(df_clusters, use_container_width=True, hide_index=True)
@@ -2143,6 +2152,6 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 st.caption(
-    "v29 — Hierarchical analysis: separate clear dendrogram + standalone interactive heatmap + "
-    "combined view; fixed combined-figure color=None crash; fixed distinct cluster palette (no picker)."
+    "v30 — Combined clustermap legend now lists each cluster's color; "
+    "Cluster Assignments CSV includes a Cluster_Color column matching the figure."
 )
