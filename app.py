@@ -265,11 +265,6 @@ with st.sidebar.expander("Sparse / Binary Analysis", expanded=False):
             "Number of clusters to highlight", 2, 30, 4,
             help="Colors the dendrogram and heatmap cluster groups by this many clusters."
         )
-        hc_custom_colors = st.checkbox(
-            "Choose custom color per cluster", value=False,
-            help="When ON, pick a specific color for each cluster below the figures. "
-                 "Useful when there are many clusters and the default palette repeats or clashes."
-        )
         hc_presence_threshold = st.number_input(
             "Presence threshold (value > this = 'detected')",
             value=0.0, step=1.0,
@@ -278,7 +273,7 @@ with st.sidebar.expander("Sparse / Binary Analysis", expanded=False):
         )
     else:
         hc_distance = "Jaccard"; hc_linkage = "average"
-        hc_n_clusters = 4; hc_presence_threshold = 0.0; hc_custom_colors = False
+        hc_n_clusters = 4; hc_presence_threshold = 0.0
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TRANSPOSE
@@ -528,25 +523,18 @@ if run_hierarchical:
             from matplotlib.colors import ListedColormap, to_hex
             from matplotlib.patches import Patch
 
-            # ── Resolve cluster colors ────────────────────────────────────────
-            # Default palette from tab20 (distinct, repeats only beyond 20)
-            try:
-                _base_cmap = plt.colormaps['tab20'].resampled(max(eff_n_clusters, 1))
-            except (AttributeError, KeyError):
-                _base_cmap = plt.cm.get_cmap('tab20', max(eff_n_clusters, 1))
-            default_cluster_hex = [to_hex(_base_cmap(i / max(eff_n_clusters, 1)))
-                                   for i in range(eff_n_clusters)]
-
-            cluster_hex = list(default_cluster_hex)
-            if hc_custom_colors:
-                st.markdown("**Cluster colors** — pick a color for each cluster:")
-                ccols = st.columns(min(6, eff_n_clusters))
-                for ci in range(eff_n_clusters):
-                    with ccols[ci % len(ccols)]:
-                        cluster_hex[ci] = st.color_picker(
-                            f"Cluster {ci+1}", value=default_cluster_hex[ci],
-                            key=f"hc_cluster_color_{ci}"
-                        )
+            # ── Cluster colors: fixed, maximally-distinct palette ─────────────
+            # Hand-picked high-contrast colors; cycles only if clusters exceed the list.
+            DISTINCT_CLUSTER_COLORS = [
+                '#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4',
+                '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', '#008080',
+                '#e6beff', '#9a6324', '#800000', '#aaffc3', '#808000',
+                '#000075', '#ffd8b1', '#000000', '#a9a9a9', '#ffe119',
+                '#42d4f4', '#f032e6', '#bfef45', '#fabed4', '#469990',
+                '#dcbeff', '#9A6324', '#fffac8', '#800000', '#aaffc3',
+            ]
+            cluster_hex = [DISTINCT_CLUSTER_COLORS[i % len(DISTINCT_CLUSTER_COLORS)]
+                           for i in range(eff_n_clusters)]
 
             txt_color = 'black' if use_white_theme else None
 
@@ -661,7 +649,10 @@ if run_hierarchical:
             ax_dend.invert_yaxis()
             ax_dend.set_xticks([]); ax_dend.set_yticks([])
             for sp in ax_dend.spines.values(): sp.set_visible(False)
-            ax_dend.set_title("Dendrogram", fontsize=10, color=txt_color if txt_color else None)
+            if txt_color:
+                ax_dend.set_title("Dendrogram", fontsize=10, color=txt_color)
+            else:
+                ax_dend.set_title("Dendrogram", fontsize=10)
 
             # Middle: cluster color strip using resolved cluster_hex
             ax_strip = fig_cm.add_subplot(gs[0, 1])
@@ -671,7 +662,10 @@ if run_hierarchical:
                             interpolation='nearest', vmin=0, vmax=eff_n_clusters - 1)
             ax_strip.set_xticks([]); ax_strip.set_yticks([])
             for sp in ax_strip.spines.values(): sp.set_visible(False)
-            ax_strip.set_title("Cluster", fontsize=9, color=txt_color if txt_color else None)
+            if txt_color:
+                ax_strip.set_title("Cluster", fontsize=9, color=txt_color)
+            else:
+                ax_strip.set_title("Cluster", fontsize=9)
 
             # Right: heatmap
             ax_heat = fig_cm.add_subplot(gs[0, 2])
@@ -2150,5 +2144,5 @@ else:
 st.markdown("---")
 st.caption(
     "v29 — Hierarchical analysis: separate clear dendrogram + standalone interactive heatmap + "
-    "combined view; per-cluster custom color picker; cluster max raised to 30."
+    "combined view; fixed combined-figure color=None crash; fixed distinct cluster palette (no picker)."
 )
