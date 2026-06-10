@@ -509,81 +509,155 @@ if run_hierarchical:
 
             cluster_ids = fcluster(Z, t=eff_n_clusters, criterion='maxclust')
 
-            # ── Dendrogram ────────────────────────────────────────────────────
-            st.subheader(f"Dendrogram ({hc_distance} distance, {hc_linkage} linkage)")
-            fig_dendro, ax_dendro = plt.subplots(figsize=(max(10, X_binary_valid.shape[0] * 0.12), 6))
-            if use_white_theme:
-                fig_dendro.patch.set_facecolor('white'); ax_dendro.set_facecolor('white')
+            # ── Combined Clustermap: dendrogram (left) + heatmap (right) ──────
+            st.subheader(f"Clustered Presence/Absence Map ({hc_distance} distance, {hc_linkage} linkage)")
 
-            # color_threshold: height that produces eff_n_clusters groups.
-            # Z has (n-1) rows; the merge at index -(k-1) gives the threshold for k clusters.
+            # Leaf order from the dendrogram so rows align between tree and heatmap
+            dendro_data  = dendrogram(Z, no_plot=True)
+            dendro_order = dendro_data['leaves']
+            X_ordered    = X_binary_valid.iloc[dendro_order]
+            y_ordered    = y_valid.iloc[dendro_order]
+            clusters_ord = cluster_ids[dendro_order]
+
+            # Order compounds by detection frequency for readability
+            col_order = X_ordered.sum(axis=0).sort_values(ascending=False).index
+            X_ordered = X_ordered[col_order]
+
+            n_samples_hc = X_ordered.shape[0]
+            n_vars_hc    = X_ordered.shape[1]
+
+            # ── Proportional sizing ──────────────────────────────────────────
+            # Height scales with samples but is clamped to keep it printable.
+            # Width scales with variables, clamped similarly.
+            fig_h = float(np.clip(n_samples_hc * 0.16, 6, 24))
+            fig_w = float(np.clip(n_vars_hc * 0.22 + 3, 9, 26))
+
+            # Decide whether sample labels are legible — hide if too many
+            show_sample_labels = n_samples_hc <= 60
+            show_var_labels    = n_vars_hc <= 80
+
+            from matplotlib.gridspec import GridSpec
+            from matplotlib.colors import ListedColormap
+
+            fig_cm = plt.figure(figsize=(fig_w, fig_h))
+            # 3 columns: dendrogram | cluster strip | heatmap
+            gs = GridSpec(
+                1, 3,
+                width_ratios=[0.18, 0.02, 0.80],
+                wspace=0.02,
+                figure=fig_cm,
+            )
+            bg = 'white' if use_white_theme else 'none'
+            txt_color = 'black' if use_white_theme else None
+            if use_white_theme:
+                fig_cm.patch.set_facecolor('white')
+
+            # --- Left: dendrogram (horizontal, leaves on the right edge) ------
+            ax_dend = fig_cm.add_subplot(gs[0, 0])
+            if use_white_theme:
+                ax_dend.set_facecolor('white')
             color_thresh = None
             if eff_n_clusters > 1 and len(Z) >= (eff_n_clusters - 1):
                 color_thresh = float(Z[-(eff_n_clusters - 1), 2])
-
-            # Build kwargs so we never pass color_threshold=None
-            dendro_kwargs = dict(
-                labels=list(y_valid.values),
-                ax=ax_dendro,
-                leaf_rotation=90,
-                leaf_font_size=7,
-            )
-            if color_thresh is not None:
-                dendro_kwargs['color_threshold'] = color_thresh
-            dendrogram(Z, **dendro_kwargs)
-
-            # Apply title/label colors only when white theme is on (never pass color=None)
-            if use_white_theme:
-                ax_dendro.set_title(f"Hierarchical Clustering — {hc_distance} distance, {hc_linkage} linkage", color='black')
-                ax_dendro.set_ylabel("Distance", color='black')
-                ax_dendro.tick_params(colors='black')
-                for sp in ax_dendro.spines.values():
-                    sp.set_edgecolor('#cccccc')
+            dkw = dict(orientation='left', ax=ax_dend, no_labels=True,
+                       color_threshold=color_thresh)
+            if color_thresh is None:
+                dkw.pop('color_threshold')
+            dendrogram(Z, **dkw)
+            ax_dend.invert_yaxis()  # align top-to-bottom with heatmap
+            ax_dend.set_xticks([])
+            ax_dend.set_yticks([])
+            for sp in ax_dend.spines.values():
+                sp.set_visible(False)
+            if txt_color:
+                ax_dend.set_title("Dendrogram", fontsize=10, color=txt_color)
             else:
-                ax_dendro.set_title(f"Hierarchical Clustering — {hc_distance} distance, {hc_linkage} linkage")
-                ax_dendro.set_ylabel("Distance")
+                ax_dend.set_title("Dendrogram", fontsize=10)
 
-            st.pyplot(fig_dendro, bbox_inches='tight'); plt.close(fig_dendro)
+            # --- Middle: cluster color strip ---------------------------------
+            ax_strip = fig_cm.add_subplot(gs[0, 1])
+            # Use a qualitative colormap for clusters
+            try:
+                base_cmap = plt.colormaps['tab20'].resampled(max(eff_n_clusters, 1))
+            except (AttributeError, KeyError):
+                base_cmap = plt.cm.get_cmap('tab20', max(eff_n_clusters, 1))
+            cluster_colors = base_cmap(np.linspace(0, 1, eff_n_clusters))
+            # Map each ordered cluster id (1..k) to 0..k-1
+            strip = (clusters_ord - 1).reshape(-1, 1)
+            ax_strip.imshow(strip, aspect='auto',
+                            cmap=ListedColormap(cluster_colors),
+                            interpolation='nearest')
+            ax_strip.set_xticks([])
+            ax_strip.set_yticks([])
+            for sp in ax_strip.spines.values():
+                sp.set_visible(False)
+
+            # --- Right: heatmap ----------------------------------------------
+            ax_heat = fig_cm.add_subplot(gs[0, 2])
+            heat_cmap = ListedColormap(['#f3f3f3', '#2166ac'])
+            ax_heat.imshow(X_ordered.values, aspect='auto', cmap=heat_cmap,
+                           interpolation='nearest', vmin=0, vmax=1)
+
+            # X axis: compound names
+            if show_var_labels:
+                ax_heat.set_xticks(range(n_vars_hc))
+                ax_heat.set_xticklabels(list(X_ordered.columns), rotation=90,
+                                        fontsize=max(5, min(9, 700 // max(n_vars_hc, 1))),
+                                        color=txt_color if txt_color else 'black')
+            else:
+                ax_heat.set_xticks([])
+                ax_heat.set_xlabel(f"{n_vars_hc} variables (too many to label — hover unavailable in static view)",
+                                   fontsize=9, color=txt_color if txt_color else 'black')
+
+            # Y axis: sample labels (only if few enough)
+            if show_sample_labels:
+                ax_heat.set_yticks(range(n_samples_hc))
+                ax_heat.set_yticklabels(list(y_ordered.values),
+                                        fontsize=max(5, min(9, 600 // max(n_samples_hc, 1))),
+                                        color=txt_color if txt_color else 'black')
+            else:
+                ax_heat.set_yticks([])
+                ax_heat.set_ylabel(f"{n_samples_hc} samples (ordered by dendrogram)",
+                                   fontsize=9, color=txt_color if txt_color else 'black')
+            ax_heat.yaxis.tick_right()
+            ax_heat.yaxis.set_label_position('right')
+
+            if txt_color:
+                ax_heat.tick_params(colors=txt_color)
+
+            # Legend for presence/absence
+            from matplotlib.patches import Patch
+            legend_elems = [
+                Patch(facecolor='#2166ac', label='Detected'),
+                Patch(facecolor='#f3f3f3', edgecolor='#cccccc', label='Not detected'),
+            ]
+            leg = ax_heat.legend(handles=legend_elems, loc='upper left',
+                                 bbox_to_anchor=(1.06, 1.0), fontsize=8,
+                                 frameon=True, title="Presence")
+            if txt_color:
+                leg.get_title().set_color(txt_color)
+                for t in leg.get_texts():
+                    t.set_color(txt_color)
+
+            sup_color = txt_color if txt_color else 'black'
+            fig_cm.suptitle(
+                f"Hierarchical Clustering of Compound Profiles "
+                f"({hc_distance} distance, {hc_linkage} linkage, {eff_n_clusters} clusters)",
+                fontsize=12, color=sup_color, y=0.995
+            )
+
+            st.pyplot(fig_cm, bbox_inches='tight'); plt.close(fig_cm)
             st.caption(
-                f"Samples are grouped by similarity of their detected-compound profiles using "
-                f"**{hc_distance}** distance. "
-                + ("Dice gives 2× weight to shared detections (co-occurring compounds) relative to Jaccard."
+                f"Left: dendrogram grouping the {n_samples_hc} samples by detected-compound similarity. "
+                f"Middle strip: cluster membership ({eff_n_clusters} clusters, colored). "
+                "Right: presence/absence heatmap with rows aligned to the dendrogram and "
+                "columns ordered by detection frequency. "
+                + ("Dice gives 2× weight to shared detections relative to Jaccard. "
                    if hc_distance == "Dice"
-                   else "Jaccard weights shared presence and shared absence symmetrically.")
-            )
-
-            # ── Presence/Absence Heatmap (ordered by clustering) ──────────────
-            st.subheader("Presence/Absence Heatmap (ordered by hierarchical clustering)")
-            dendro_order = dendrogram(Z, no_plot=True)['leaves']
-            X_ordered    = X_binary_valid.iloc[dendro_order]
-            y_ordered    = y_valid.iloc[dendro_order]
-            col_order    = X_ordered.sum(axis=0).sort_values(ascending=False).index
-            X_ordered    = X_ordered[col_order]
-
-            fig_heat = go.Figure(go.Heatmap(
-                z=X_ordered.values,
-                x=list(X_ordered.columns),
-                y=[f"{lbl}" for lbl in y_ordered.values],
-                colorscale=[[0, '#f7f7f7'], [1, '#2166ac']],
-                showscale=True,
-                colorbar=dict(title="Detected", tickvals=[0, 1], ticktext=["Absent", "Present"]),
-                hovertemplate="Sample: %{y}<br>Variable: %{x}<br>%{z}<extra></extra>",
-                xgap=0.5, ygap=0.2,
-            ))
-            fig_heat.update_layout(
-                title="Compound Presence/Absence Across Samples (clustered)",
-                xaxis_title="Variables (compounds)",
-                yaxis_title="Samples (ordered by dendrogram)",
-                height=max(500, X_ordered.shape[0] * 12),
-                xaxis=dict(tickangle=45, tickfont=dict(size=8)),
-                yaxis=dict(tickfont=dict(size=6), autorange='reversed'),
-            )
-            apply_white_theme(fig_heat)
-            st.plotly_chart(fig_heat, use_container_width=True)
-            st.caption(
-                "Rows (samples) are ordered to match the dendrogram above, so clustered samples "
-                "appear adjacent. Columns (compounds) are ordered by detection frequency. "
-                "Blue = compound detected; gray = not detected."
+                   else "Jaccard weights shared presence and absence symmetrically. ")
+                + ("" if show_sample_labels else
+                   "Sample labels are hidden because there are too many to display legibly — "
+                   "use the Cluster Assignments table below to identify samples. ")
             )
 
             # ── Cluster membership table + download ───────────────────────────
@@ -2009,6 +2083,6 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 st.caption(
-    "v27 — Fixed dendrogram color=None crash; hierarchical analysis moved after Processed Data "
-    "Overview; presence/absence basis clarified (raw detection, valid even with no standardization)."
+    "v28 — Combined clustermap: dendrogram + cluster strip + presence/absence heatmap in one "
+    "proportional figure; auto-hides labels when too many; scales for large datasets."
 )
