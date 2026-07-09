@@ -189,18 +189,25 @@ with st.sidebar.expander("Analysis Mode", expanded=True):
     )
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SIDEBAR – DATA PREP
+# SIDEBAR – DATA PREP (row-wise per-sample, then column-wise per-variable)
 # ══════════════════════════════════════════════════════════════════════════════
-with st.sidebar.expander("Data Prep Options", expanded=False):
+with st.sidebar.expander("Data Prep Options", expanded=True):
     transpose_data = st.checkbox(
         "Transpose Dataset (samples are columns)", value=False,
         help="Swaps rows/cols. Use when samples are columns and features are rows."
     )
+    st.caption(
+        "Preprocessing order is fixed: **row-wise (per-sample) → column-wise (per-variable) → decomposition.** "
+        "Per-sample corrections fix each spectrum's physical artifacts first; per-variable scaling then "
+        "puts all variables on equal footing across the dataset."
+    )
 
-    st.markdown("---")
-    st.markdown("**Savitzky–Golay (spectral preprocessing)**")
-    st.caption("Applied first, per-sample along the variable axis — before normalization and standardization. "
-               "Best for continuous spectral data (FTIR, Raman, UV/Vis); not meaningful for sparse peak tables.")
+    # ─────────────────────────────────────────────────────────────────────────
+    st.markdown("### Row-wise options (per-sample)")
+    st.caption("Applied to each sample individually, along the variable axis.")
+
+    st.markdown("**1. Savitzky–Golay filter**")
+    st.caption("Runs first. Best for continuous spectra (FTIR, Raman, UV/Vis); not meaningful for sparse peak tables.")
     sg_mode = st.radio(
         "Savitzky–Golay mode:",
         ['None', 'Smoothing', 'Derivative'],
@@ -240,38 +247,46 @@ with st.sidebar.expander("Data Prep Options", expanded=False):
     else:
         sg_deriv_order = 0
 
-    st.markdown("---")
-    preprocess_option = st.radio(
-        "Standardization (applied last, after normalization):",
-        ['None', 'SNV', 'Z-score'], index=2,
+    st.markdown("**2. Normalization**")
+    st.caption("Puts each sample on a common scale. You can apply **multiple** methods in sequence — "
+               "spectral data is often noisy and benefits from stacked preprocessing. "
+               "They are applied top-to-bottom in the fixed order listed below.")
+    norm_options_selected = st.multiselect(
+        "Normalization method(s) — applied in order:",
+        ['SNV', 'Unit Area (Total Sum)', 'Unit Vector (L2 Norm)',
+         'Min-Max (per sample)', 'Internal Standard'],
+        default=[],
         help=(
-            "**SNV (Standard Normal Variate):** Centers and scales each *sample* (row) by its own "
-            "mean and standard deviation. Best when all variables share the same unit "
-            "(e.g., absorbance across wavelengths) and you want to remove sample-to-sample "
-            "baseline/intensity differences.\n\n"
-            "**Z-score:** Centers and scales each *variable* (column) across all samples using "
-            "the population mean and std. Best when variables are on widely different scales "
-            "(e.g., mixing concentrations in mM with temperatures in °C), so every variable "
-            "contributes equally to the decomposition."
+            "Select none, one, or several. They are applied in this fixed sequence: "
+            "Internal Standard → Unit Area → Unit Vector (L2) → Min-Max → SNV. "
+            "(SNV is applied last of the normalizations because it mean-centers each row, "
+            "which should follow any magnitude rescaling.)\n\n"
+            "**SNV:** centers/scales each sample by its own mean and std — removes baseline/scatter.\n\n"
+            "**Unit Area:** divides each sample by its total sum.\n\n"
+            "**Unit Vector (L2):** divides each sample by its Euclidean length.\n\n"
+            "**Min-Max:** rescales each sample to [0, 1].\n\n"
+            "**Internal Standard:** divides each variable by the IS row value."
         )
     )
+    # Keep a single-string form for backward-compatible IS selector logic below
+    norm_option = 'Internal Standard' if 'Internal Standard' in norm_options_selected else (
+        norm_options_selected[0] if norm_options_selected else 'None'
+    )
 
-# ══════════════════════════════════════════════════════════════════════════════
-# SIDEBAR – NORMALIZATION
-# ══════════════════════════════════════════════════════════════════════════════
-with st.sidebar.expander("Normalization Options", expanded=True):
-    st.markdown("Applied **before** standardization.")
-    norm_option = st.radio(
-        "Normalization method:",
-        ['None', 'Unit Area (Total Sum)', 'Unit Vector (L2 Norm)',
-         'Min-Max (per sample)', 'Internal Standard'],
-        index=0,
+    # ─────────────────────────────────────────────────────────────────────────
+    st.markdown("### Column-wise options (per-variable)")
+    st.caption("Applied to each variable across all samples, after the row-wise steps above.")
+    preprocess_option = st.radio(
+        "Standardization / autoscaling:",
+        ['None', 'Z-score (autoscaling)'],
+        index=1,
         help=(
-            "**Unit Area:** divides each sample by its total sum — removes concentration differences.\n\n"
-            "**Unit Vector (L2):** divides each sample by its Euclidean length — scale-invariant.\n\n"
-            "**Min-Max:** rescales each sample to [0, 1] using its own min and max.\n\n"
-            "**Internal Standard:** each variable in a sample is divided by the IS row value "
-            "for that same variable. Select the IS row in the selector below."
+            "**None:** no per-variable scaling at all. PCA then runs on the row-wise result "
+            "directly — only appropriate when your variables are already on the same scale "
+            "(e.g. SNV-corrected data). Otherwise high-magnitude variables will dominate PCA.\n\n"
+            "**Z-score (autoscaling):** centers and scales each variable (column) across all samples "
+            "using the population mean and standard deviation. Best when variables are on widely "
+            "different scales, so every variable contributes equally to the decomposition."
         )
     )
 
@@ -409,41 +424,17 @@ if sg_mode in ('Smoothing', 'Derivative'):
         st.error(f"Savitzky–Golay filter failed: {e}")
         st.stop()
 
-if norm_option != 'None':
-    if norm_option == 'Unit Area (Total Sum)':
-        # Row sums — vectorized: divide each row by its own total
-        row_sums = X.sum(axis=1)                      # Series, one value per sample
-        zero_rows = row_sums[row_sums == 0].index
-        if len(zero_rows) > 0:
-            st.warning(f"{len(zero_rows)} sample(s) have row sum = 0 — Unit Area skipped for those rows.")
-        # Replace zeros with 1 so division is a no-op for zero-sum rows
-        row_sums_safe = row_sums.replace(0, 1)
-        X = X.div(row_sums_safe, axis=0)
-        st.success("Normalization applied: Unit Area / Total Sum (per sample)")
+# ── Apply each selected normalization in a fixed, defensible order ─────────────
+# Order: Internal Standard → Unit Area → Unit Vector (L2) → Min-Max → SNV
+# (magnitude rescalings first; SNV mean-centers each row so it comes last)
+NORM_ORDER = ['Internal Standard', 'Unit Area (Total Sum)',
+              'Unit Vector (L2 Norm)', 'Min-Max (per sample)', 'SNV']
 
-    elif norm_option == 'Unit Vector (L2 Norm)':
-        # L2 norm per row — vectorized
-        row_l2 = np.sqrt((X ** 2).sum(axis=1))        # Series, one value per sample
-        zero_rows = row_l2[row_l2 == 0].index
-        if len(zero_rows) > 0:
-            st.warning(f"{len(zero_rows)} sample(s) have L2 = 0 — Unit Vector skipped for those rows.")
-        row_l2_safe = row_l2.replace(0, 1)
-        X = X.div(row_l2_safe, axis=0)
-        st.success("Normalization applied: Unit Vector / L2 Norm (per sample)")
+for _norm in NORM_ORDER:
+    if _norm not in norm_options_selected:
+        continue
 
-    elif norm_option == 'Min-Max (per sample)':
-        # Min and max per row — vectorized
-        row_min  = X.min(axis=1)
-        row_max  = X.max(axis=1)
-        row_span = row_max - row_min
-        const_rows = row_span[row_span == 0].index
-        if len(const_rows) > 0:
-            st.warning(f"{len(const_rows)} sample(s) are constant — Min-Max skipped for those rows.")
-        row_span_safe = row_span.replace(0, 1)
-        X = X.sub(row_min, axis=0).div(row_span_safe, axis=0)
-        st.success("Normalization applied: Min-Max (per sample)")
-
-    elif norm_option == 'Internal Standard':
+    if _norm == 'Internal Standard':
         if is_label_val is None:
             st.error("Select an Internal Standard label in the sidebar.")
             st.stop()
@@ -451,51 +442,91 @@ if norm_option != 'None':
         if is_mask.sum() == 0:
             st.error(f"No rows found with label '{is_label_val}'.")
             st.stop()
-        # Average IS rows → one IS value per variable (column)
-        is_values = X.loc[is_mask].mean(axis=0)       # Series, one value per column
+        is_values = X.loc[is_mask].mean(axis=0)       # one IS value per column
         zero_cols = is_values[is_values == 0].index.tolist()
         if zero_cols:
             st.warning(
                 f"{len(zero_cols)} variable(s) have IS value = 0 and will NOT be normalized: "
                 f"{zero_cols[:5]}{'...' if len(zero_cols) > 5 else ''}"
             )
-        # Divide each column by its IS value (leave zero-IS columns untouched)
         is_values_safe = is_values.copy()
-        is_values_safe[is_values_safe == 0] = 1       # no-op divisor for zero-IS columns
+        is_values_safe[is_values_safe == 0] = 1
         X = X.div(is_values_safe, axis=1)
         st.success(
             f"Normalization applied: Internal Standard "
             f"(IS label = '{is_label_val}', {is_mask.sum()} IS row(s) averaged per variable)"
         )
 
+    elif _norm == 'Unit Area (Total Sum)':
+        row_sums = X.sum(axis=1)
+        zero_rows = row_sums[row_sums == 0].index
+        if len(zero_rows) > 0:
+            st.warning(f"{len(zero_rows)} sample(s) have row sum = 0 — Unit Area skipped for those rows.")
+        X = X.div(row_sums.replace(0, 1), axis=0)
+        st.success("Normalization applied: Unit Area / Total Sum (per sample)")
+
+    elif _norm == 'Unit Vector (L2 Norm)':
+        row_l2 = np.sqrt((X ** 2).sum(axis=1))
+        zero_rows = row_l2[row_l2 == 0].index
+        if len(zero_rows) > 0:
+            st.warning(f"{len(zero_rows)} sample(s) have L2 = 0 — Unit Vector skipped for those rows.")
+        X = X.div(row_l2.replace(0, 1), axis=0)
+        st.success("Normalization applied: Unit Vector / L2 Norm (per sample)")
+
+    elif _norm == 'Min-Max (per sample)':
+        row_min  = X.min(axis=1)
+        row_max  = X.max(axis=1)
+        row_span = row_max - row_min
+        const_rows = row_span[row_span == 0].index
+        if len(const_rows) > 0:
+            st.warning(f"{len(const_rows)} sample(s) are constant — Min-Max skipped for those rows.")
+        X = X.sub(row_min, axis=0).div(row_span.replace(0, 1), axis=0)
+        st.success("Normalization applied: Min-Max (per sample)")
+
+    elif _norm == 'SNV':
+        row_mean = X.mean(axis=1)
+        row_std  = X.std(axis=1)
+        zero_std = row_std[row_std == 0].index
+        if len(zero_std) > 0:
+            st.warning(f"{len(zero_std)} sample(s) have zero variance — SNV skipped for those rows.")
+        X = X.sub(row_mean, axis=0).div(row_std.replace(0, 1), axis=0)
+        st.success("Normalization applied: SNV (per-sample, row-wise)")
+
+if len(norm_options_selected) > 1:
+    st.info(
+        f"**{len(norm_options_selected)} normalization steps** were stacked, applied in order: "
+        + " → ".join([n for n in NORM_ORDER if n in norm_options_selected])
+    )
+
 y = y_raw.copy()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STANDARDIZATION (applied after normalization)
+# STANDARDIZATION / AUTOSCALING (column-wise per-variable, after row-wise steps)
 # ══════════════════════════════════════════════════════════════════════════════
-if preprocess_option == 'SNV':
-    # Per-sample (row-wise): center and scale each sample by its own mean and std — vectorized
-    row_mean = X.mean(axis=1)
-    row_std  = X.std(axis=1)
-    zero_std = row_std[row_std == 0].index
-    if len(zero_std) > 0:
-        st.warning(f"{len(zero_std)} sample(s) have zero variance — SNV skipped for those rows.")
-    row_std_safe = row_std.replace(0, 1)
-    X_snv    = X.sub(row_mean, axis=0).div(row_std_safe, axis=0)
-    X_scaled = X_snv.values
-    st.success("Standardization applied: SNV (per-sample, row-wise)")
-
-elif preprocess_option == 'Z-score':
+if preprocess_option == 'Z-score (autoscaling)':
     # Per-variable (column-wise): center and scale each variable by population mean and std
     scaler   = StandardScaler()
     X_scaled = scaler.fit_transform(X)
-    st.success("Standardization applied: Z-score (per-variable, population-wise)")
+    st.success("Column-wise scaling applied: Z-score / autoscaling (per-variable, population-wise)")
 
 else:
-    # No standardization — still Z-score before decomposition to keep PCA meaningful
-    scaler   = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    st.info("No standardization selected — Z-score applied automatically before decomposition to ensure equal feature weighting.")
+    # None means NONE — no column-wise scaling applied. PCA runs on the row-wise result as-is.
+    X_scaled = X.values.astype(float)
+    # Warn when the variables are on very different scales, which distorts PCA
+    col_stds = np.std(X_scaled, axis=0)
+    nonzero_stds = col_stds[col_stds > 0]
+    scale_ratio = (nonzero_stds.max() / nonzero_stds.min()) if len(nonzero_stds) > 0 else 1.0
+    st.warning(
+        "⚠️ **No column-wise scaling applied ('None').** PCA and other variance-based methods are "
+        "**scale-sensitive**: variables with larger numeric ranges will dominate the components, "
+        "regardless of their actual importance. "
+        + (f"Your variables span a ~{scale_ratio:,.0f}× range in standard deviation, so a few "
+           "high-magnitude variables will likely drive the entire decomposition. "
+           if scale_ratio > 10 else "")
+        + "Only leave this as 'None' if your variables are already on the same scale "
+          "(e.g. SNV-corrected absorbance, or a single instrument's response units). "
+          "Otherwise select **Z-score (autoscaling)** above."
+    )
 
 # ── Processed Data Overview ───────────────────────────────────────────────────
 # Build a human-readable label for what was applied
@@ -505,12 +536,13 @@ if sg_mode == 'Smoothing':
 elif sg_mode == 'Derivative':
     _ord_lbl = {1: '1st', 2: '2nd'}.get(sg_deriv_order, f'{sg_deriv_order}th')
     _steps.append(f"SG {_ord_lbl} derivative (win={sg_window}, poly={sg_polyorder})")
-if norm_option != 'None':
-    _steps.append(norm_option)
-if preprocess_option != 'None':
-    _steps.append(f"{preprocess_option} standardization")
+if norm_options_selected:
+    for _n in [n for n in NORM_ORDER if n in norm_options_selected]:
+        _steps.append(_n)
+if preprocess_option == 'Z-score (autoscaling)':
+    _steps.append("Z-score autoscaling")
 else:
-    _steps.append("Z-score standardization (auto-applied)")
+    _steps.append("no column-wise scaling")
 _pipeline_label = " → ".join(_steps) if _steps else "No preprocessing"
 
 st.subheader("Processed Data Overview")
@@ -919,16 +951,16 @@ n_95  = int(np.argmax(cum_var >= 0.95)) + 1 if np.any(cum_var >= 0.95) else n_to
 n_99  = int(np.argmax(cum_var >= 0.99)) + 1 if np.any(cum_var >= 0.99) else n_total_pcs
 
 norm_detail_map = {
-    'None':                  "None — raw data passed to standardization.",
+    'None':                  "None — data passed unchanged to column-wise scaling.",
+    'SNV':                   "SNV: each sample (row) centered and scaled by its own mean and std (per-sample).",
     'Unit Area (Total Sum)': "Unit Area: each sample ÷ its own total sum (per-sample).",
     'Unit Vector (L2 Norm)': "Unit Vector (L2): each sample ÷ its own Euclidean length (per-sample).",
     'Min-Max (per sample)':  "Min-Max: each sample rescaled to [0,1] using its own min/max (per-sample).",
     'Internal Standard':     f"Internal Standard: each variable ÷ IS row avg for that variable (IS = '{is_label_val}').",
 }
 std_detail_map = {
-    'None':     "Z-score auto-applied (population-wise) — no user standardization selected.",
-    'SNV':      "SNV: each sample (row) centered and scaled by its own mean and std (per-sample).",
-    'Z-score':  "Z-score: each variable (column) centered and scaled by population mean and std (population-wise).",
+    'None':                  "None — no column-wise scaling applied (PCA runs on row-wise result as-is).",
+    'Z-score (autoscaling)': "Z-score autoscaling: each variable (column) centered and scaled by population mean and std.",
 }
 
 with st.expander(f"📋 {analysis_mode.split('(')[0].strip()} Pipeline Details", expanded=True):
@@ -939,12 +971,18 @@ with st.expander(f"📋 {analysis_mode.split('(')[0].strip()} Pipeline Details",
         _sg_detail = f"SG {_ord_lbl} derivative (window={sg_window}, polyorder={sg_polyorder})"
     else:
         _sg_detail = "None"
+    if norm_options_selected:
+        _norm_detail = "; ".join([
+            norm_detail_map.get(n, n) for n in NORM_ORDER if n in norm_options_selected
+        ])
+    else:
+        _norm_detail = "None — no normalization applied."
     st.markdown(f"""
 **Input:** {X_scaled.shape[0]} samples × {X_scaled.shape[1]} features  
-**Step 1 — Savitzky–Golay:** {_sg_detail}  
-**Step 2 — Normalization:** {norm_detail_map.get(norm_option, norm_option)}  
-**Step 3 — Standardization:** {std_detail_map.get(preprocess_option, preprocess_option)}  
-**Step 4 — Decomposition:** `{analysis_mode}`  
+**Row-wise 1 — Savitzky–Golay:** {_sg_detail}  
+**Row-wise 2 — Normalization:** {_norm_detail}  
+**Column-wise — Standardization:** {std_detail_map.get(preprocess_option, preprocess_option)}  
+**Decomposition:** `{analysis_mode}`  
 
 | Component | Variance Explained | Cumulative |
 |---|---|---|
@@ -2243,6 +2281,6 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 st.caption(
-    "v31 — Savitzky–Golay preprocessing: smoothing (window slider + polynomial order) and "
-    "derivative (1st/2nd order), applied first in the pipeline before normalization/standardization."
+    "v33 — 'None' standardization now truly applies no column-wise scaling (with a PCA scale-sensitivity "
+    "warning); normalization is now multi-select so several methods can be stacked in a fixed order."
 )
