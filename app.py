@@ -247,6 +247,16 @@ with st.sidebar.expander("Data Prep Options", expanded=True):
     else:
         sg_deriv_order = 0
 
+    if sg_mode in ('Smoothing', 'Derivative'):
+        sg_preview = st.checkbox(
+            "Preview one spectrum (raw vs. filtered)", value=False,
+            help="Shows a single sample's spectrum before and after the Savitzky–Golay filter, "
+                 "so you can see the effect of the window/polynomial settings. "
+                 "Off by default to keep the app fast."
+        )
+    else:
+        sg_preview = False
+
     st.markdown("**2. Normalization**")
     st.caption("Puts each sample on a common scale. You can apply **multiple** methods in sequence — "
                "spectral data is often noisy and benefits from stacked preprocessing. "
@@ -395,6 +405,8 @@ X = X_raw.astype(float).copy()
 # ── Savitzky–Golay spectral preprocessing (applied FIRST, per-sample row-wise) ──
 if sg_mode in ('Smoothing', 'Derivative'):
     n_features_sg = X.shape[1]
+    # Keep a copy of the raw (pre-filter) values for the preview
+    X_before_sg = X.copy()
     # Validate window: must be odd, > polyorder, and <= number of features
     win = sg_window
     if win >= n_features_sg:
@@ -423,6 +435,85 @@ if sg_mode in ('Smoothing', 'Derivative'):
     except Exception as e:
         st.error(f"Savitzky–Golay filter failed: {e}")
         st.stop()
+
+    # ── Interactive single-spectrum preview (only if requested) ───────────────
+    if sg_preview:
+        st.subheader("Savitzky–Golay Spectrum Preview")
+
+        # Auto-detect an x-axis: if column names parse as numbers, treat them as
+        # wavenumbers (Raman/IR). Otherwise fall back to a plain index.
+        col_names = list(X.columns)
+        x_numeric = pd.to_numeric(pd.Series(col_names), errors='coerce')
+        if x_numeric.notna().all():
+            x_axis      = x_numeric.values
+            x_axis_title = "Wavenumber (cm⁻¹)"
+            # Raman/IR spectra are conventionally plotted high→low wavenumber
+            reverse_x   = x_axis[0] < x_axis[-1]
+        else:
+            x_axis      = np.arange(len(col_names))
+            x_axis_title = "Variable index"
+            reverse_x   = False
+
+        # Let the user choose which sample to preview
+        sample_labels = [f"{i}: {lbl}" for i, lbl in enumerate(y_raw.values)]
+        sel_preview = st.selectbox(
+            "Select a spectrum to preview", options=list(range(len(sample_labels))),
+            format_func=lambda i: sample_labels[i], index=0
+        )
+
+        raw_spec = X_before_sg.iloc[sel_preview].values
+        filt_spec = X.iloc[sel_preview].values
+
+        fig_prev = go.Figure()
+        # For derivatives, raw and filtered are on very different scales, so use a
+        # secondary y-axis to keep both visible.
+        if sg_mode == 'Derivative':
+            fig_prev.add_trace(go.Scatter(
+                x=x_axis, y=raw_spec, mode='lines', name='Raw',
+                line=dict(color='#999999', width=1.2), yaxis='y1'
+            ))
+            fig_prev.add_trace(go.Scatter(
+                x=x_axis, y=filt_spec, mode='lines',
+                name=f"{ {1:'1st',2:'2nd'}.get(deriv, str(deriv)+'th') } derivative",
+                line=dict(color='#2166ac', width=1.8), yaxis='y2'
+            ))
+            fig_prev.update_layout(
+                yaxis=dict(title="Raw intensity"),
+                yaxis2=dict(title="Derivative", overlaying='y', side='right',
+                            showgrid=False),
+            )
+        else:
+            fig_prev.add_trace(go.Scatter(
+                x=x_axis, y=raw_spec, mode='lines', name='Raw',
+                line=dict(color='#c0c0c0', width=1.5)
+            ))
+            fig_prev.add_trace(go.Scatter(
+                x=x_axis, y=filt_spec, mode='lines', name='Smoothed',
+                line=dict(color='#2166ac', width=1.8)
+            ))
+            fig_prev.update_layout(yaxis=dict(title="Intensity"))
+
+        fig_prev.update_layout(
+            title=f"Sample '{y_raw.values[sel_preview]}' — raw vs. filtered "
+                  f"(window={win}, polyorder={sg_polyorder}"
+                  + (f", deriv={deriv}" if sg_mode == 'Derivative' else "") + ")",
+            xaxis_title=x_axis_title,
+            height=430,
+            legend=dict(orientation='h', y=1.08, x=0),
+        )
+        if reverse_x:
+            fig_prev.update_xaxes(autorange='reversed')
+        apply_white_theme(fig_prev)
+        st.plotly_chart(fig_prev, use_container_width=True)
+        st.caption(
+            f"X-axis auto-detected as **{x_axis_title}** "
+            + ("(column names parsed as numeric wavenumbers)."
+               if x_axis_title.startswith("Wavenumber")
+               else "(column names are not numeric, so the variable index is used).")
+            + " Adjust the window size and polynomial order in the sidebar and this preview updates live. "
+            "Larger windows smooth more but can flatten sharp Raman peaks; the polynomial order controls "
+            "how closely the fit follows local curvature."
+        )
 
 # ── Apply each selected normalization in a fixed, defensible order ─────────────
 # Order: Internal Standard → Unit Area → Unit Vector (L2) → Min-Max → SNV
@@ -1470,26 +1561,37 @@ if show_loadings:
             st.warning(f"{component_label}{sel_comp_num} has zero variance.")
         else:
             lrow     = loadings_matrix.iloc[sel_comp_idx]
-            lrow_abs = lrow.abs()
             st.info(f"Variance by {component_label}{sel_comp_num}: {var_ratios[sel_comp_idx]:.1%}")
             if loadings_type == "Bar Graph (Discrete, e.g., GCMS)":
-                sv2  = lrow_abs.sort_values(ascending=False).index
+                # Sort by signed value so positive loadings are on one side, negative on the other
+                sv2      = lrow.sort_values(ascending=False).index
+                vals2    = lrow.loc[sv2].values
+                bar_cols = ['#c0392b' if v < 0 else '#2166ac' for v in vals2]  # red = negative, blue = positive
                 fg2  = go.Figure()
-                fg2.add_trace(go.Bar(x=sv2, y=lrow_abs.loc[sv2].values,
-                                      marker_color='steelblue', name=f"{component_label}{sel_comp_num}"))
-                fg2.update_layout(title=f"{loadings_title_suffix}: {component_label}{sel_comp_num} (Abs)",
-                                   xaxis_title="Variables", yaxis_title="Magnitude", height=400)
+                fg2.add_trace(go.Bar(x=sv2, y=vals2,
+                                      marker_color=bar_cols, name=f"{component_label}{sel_comp_num}"))
+                fg2.add_hline(y=0, line_width=1, line_color='gray')
+                fg2.update_layout(title=f"{loadings_title_suffix}: {component_label}{sel_comp_num} (signed)",
+                                   xaxis_title="Variables", yaxis_title="Loading (signed)", height=400)
                 fg2.update_xaxes(tickangle=45, tickfont=dict(size=9))
             else:
                 fg2 = go.Figure()
-                fg2.add_trace(go.Scatter(x=X.columns.tolist(), y=lrow_abs.values,
+                fg2.add_trace(go.Scatter(x=X.columns.tolist(), y=lrow.values,
                                           mode='lines', line=dict(width=2),
                                           name=f"{component_label}{sel_comp_num}"))
-                fg2.update_layout(title=f"{loadings_title_suffix}: {component_label}{sel_comp_num} (Abs, Line)",
-                                   xaxis_title="Variables", yaxis_title="Magnitude", height=400)
+                fg2.add_hline(y=0, line_width=1, line_color='gray')
+                fg2.update_layout(title=f"{loadings_title_suffix}: {component_label}{sel_comp_num} (signed, Line)",
+                                   xaxis_title="Variables", yaxis_title="Loading (signed)", height=400)
                 fg2.update_xaxes(tickangle=45, tickfont=dict(size=9))
             apply_white_theme(fg2)
             st.plotly_chart(fg2, use_container_width=True)
+            st.caption(
+                "Positive and negative loadings are both shown. "
+                + ("Blue bars = positive, red bars = negative. "
+                   if loadings_type == "Bar Graph (Discrete, e.g., GCMS)" else "")
+                + "The sign indicates the direction a variable pushes samples along this component: "
+                "variables with opposite signs are anti-correlated on this axis."
+            )
             st.subheader(f"{loadings_title_suffix} Table — {component_label}{sel_comp_num}")
             st.dataframe(lrow.to_frame(name=f"{component_label}{sel_comp_num}"))
 
@@ -2281,6 +2383,6 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 st.caption(
-    "v33 — 'None' standardization now truly applies no column-wise scaling (with a PCA scale-sensitivity "
-    "warning); normalization is now multi-select so several methods can be stacked in a fixed order."
+    "v35 — Optional Savitzky–Golay spectrum preview: pick a sample and see raw vs. filtered live "
+    "as you adjust window/polyorder; auto-detects wavenumber x-axis from numeric column names."
 )
