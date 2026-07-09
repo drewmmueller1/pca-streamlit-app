@@ -20,6 +20,7 @@ from plotly.subplots import make_subplots
 import matplotlib.pyplot as plt
 from scipy.cluster.hierarchy import linkage, dendrogram, fcluster
 from scipy.spatial.distance import pdist, squareform
+from scipy.signal import savgol_filter
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -195,6 +196,51 @@ with st.sidebar.expander("Data Prep Options", expanded=False):
         "Transpose Dataset (samples are columns)", value=False,
         help="Swaps rows/cols. Use when samples are columns and features are rows."
     )
+
+    st.markdown("---")
+    st.markdown("**Savitzky–Golay (spectral preprocessing)**")
+    st.caption("Applied first, per-sample along the variable axis — before normalization and standardization. "
+               "Best for continuous spectral data (FTIR, Raman, UV/Vis); not meaningful for sparse peak tables.")
+    sg_mode = st.radio(
+        "Savitzky–Golay mode:",
+        ['None', 'Smoothing', 'Derivative'],
+        index=0,
+        help=(
+            "**None:** no SG filter applied.\n\n"
+            "**Smoothing:** fits a local polynomial in a sliding window to reduce noise "
+            "while preserving peak shape (0th derivative).\n\n"
+            "**Derivative:** computes the nth derivative of the smoothed signal — "
+            "1st derivative removes baseline offset, 2nd derivative removes sloped baselines "
+            "and resolves overlapping peaks."
+        )
+    )
+    if sg_mode in ('Smoothing', 'Derivative'):
+        sg_window = st.slider(
+            "Window size (points, must be odd)", 3, 51, 11, step=2,
+            help="Number of points in the sliding window. Larger = more smoothing but can distort "
+                 "sharp peaks. Must be odd and greater than the polynomial order."
+        )
+        sg_polyorder = st.selectbox(
+            "Polynomial order",
+            [2, 3, 4, 5], index=0,
+            help="Order of the polynomial fit within each window. 2–3 is typical. "
+                 "Must be less than the window size."
+        )
+    else:
+        sg_window = 11; sg_polyorder = 2
+
+    if sg_mode == 'Derivative':
+        sg_deriv_order = st.selectbox(
+            "Derivative order",
+            [1, 2], index=0,
+            help="**1st derivative:** removes constant baseline offset, highlights slopes.\n\n"
+                 "**2nd derivative:** removes linear baseline, sharpens and separates overlapping peaks. "
+                 "Note: higher derivatives amplify noise, so pair with adequate smoothing window."
+        )
+    else:
+        sg_deriv_order = 0
+
+    st.markdown("---")
     preprocess_option = st.radio(
         "Standardization (applied last, after normalization):",
         ['None', 'SNV', 'Z-score'], index=2,
@@ -331,6 +377,38 @@ if norm_option == 'Internal Standard':
 # when squared (L2) or produce integer-division truncation in other methods.
 X = X_raw.astype(float).copy()
 
+# ── Savitzky–Golay spectral preprocessing (applied FIRST, per-sample row-wise) ──
+if sg_mode in ('Smoothing', 'Derivative'):
+    n_features_sg = X.shape[1]
+    # Validate window: must be odd, > polyorder, and <= number of features
+    win = sg_window
+    if win >= n_features_sg:
+        win = n_features_sg if n_features_sg % 2 == 1 else n_features_sg - 1
+        st.warning(f"SG window reduced to {win} (cannot exceed number of variables, {n_features_sg}).")
+    if win % 2 == 0:
+        win += 1
+    if win <= sg_polyorder:
+        st.error(
+            f"Savitzky–Golay error: window ({win}) must be greater than polynomial order "
+            f"({sg_polyorder}). Increase the window size or lower the polynomial order."
+        )
+        st.stop()
+    deriv = sg_deriv_order if sg_mode == 'Derivative' else 0
+    try:
+        sg_values = savgol_filter(
+            X.values, window_length=win, polyorder=sg_polyorder,
+            deriv=deriv, axis=1
+        )
+        X = pd.DataFrame(sg_values, index=X.index, columns=X.columns)
+        if sg_mode == 'Smoothing':
+            st.success(f"Savitzky–Golay smoothing applied (window={win}, polyorder={sg_polyorder})")
+        else:
+            _ord = {1: '1st', 2: '2nd'}.get(deriv, f'{deriv}th')
+            st.success(f"Savitzky–Golay {_ord} derivative applied (window={win}, polyorder={sg_polyorder})")
+    except Exception as e:
+        st.error(f"Savitzky–Golay filter failed: {e}")
+        st.stop()
+
 if norm_option != 'None':
     if norm_option == 'Unit Area (Total Sum)':
         # Row sums — vectorized: divide each row by its own total
@@ -422,13 +500,18 @@ else:
 # ── Processed Data Overview ───────────────────────────────────────────────────
 # Build a human-readable label for what was applied
 _steps = []
+if sg_mode == 'Smoothing':
+    _steps.append(f"SG smoothing (win={sg_window}, poly={sg_polyorder})")
+elif sg_mode == 'Derivative':
+    _ord_lbl = {1: '1st', 2: '2nd'}.get(sg_deriv_order, f'{sg_deriv_order}th')
+    _steps.append(f"SG {_ord_lbl} derivative (win={sg_window}, poly={sg_polyorder})")
 if norm_option != 'None':
     _steps.append(norm_option)
 if preprocess_option != 'None':
     _steps.append(f"{preprocess_option} standardization")
 else:
     _steps.append("Z-score standardization (auto-applied)")
-_pipeline_label = " → ".join(_steps)
+_pipeline_label = " → ".join(_steps) if _steps else "No preprocessing"
 
 st.subheader("Processed Data Overview")
 st.caption(
@@ -849,11 +932,19 @@ std_detail_map = {
 }
 
 with st.expander(f"📋 {analysis_mode.split('(')[0].strip()} Pipeline Details", expanded=True):
+    if sg_mode == 'Smoothing':
+        _sg_detail = f"SG smoothing (window={sg_window}, polyorder={sg_polyorder})"
+    elif sg_mode == 'Derivative':
+        _ord_lbl = {1: '1st', 2: '2nd'}.get(sg_deriv_order, f'{sg_deriv_order}th')
+        _sg_detail = f"SG {_ord_lbl} derivative (window={sg_window}, polyorder={sg_polyorder})"
+    else:
+        _sg_detail = "None"
     st.markdown(f"""
 **Input:** {X_scaled.shape[0]} samples × {X_scaled.shape[1]} features  
-**Step 1 — Normalization:** {norm_detail_map.get(norm_option, norm_option)}  
-**Step 2 — Standardization:** {std_detail_map.get(preprocess_option, preprocess_option)}  
-**Step 3 — Decomposition:** `{analysis_mode}`  
+**Step 1 — Savitzky–Golay:** {_sg_detail}  
+**Step 2 — Normalization:** {norm_detail_map.get(norm_option, norm_option)}  
+**Step 3 — Standardization:** {std_detail_map.get(preprocess_option, preprocess_option)}  
+**Step 4 — Decomposition:** `{analysis_mode}`  
 
 | Component | Variance Explained | Cumulative |
 |---|---|---|
@@ -2152,6 +2243,6 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 st.caption(
-    "v30 — Combined clustermap legend now lists each cluster's color; "
-    "Cluster Assignments CSV includes a Cluster_Color column matching the figure."
+    "v31 — Savitzky–Golay preprocessing: smoothing (window slider + polynomial order) and "
+    "derivative (1st/2nd order), applied first in the pipeline before normalization/standardization."
 )
