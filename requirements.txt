@@ -5,4 +5,3 @@ scipy
 scikit-learn
 plotly
 matplotlib
-mlxtend
