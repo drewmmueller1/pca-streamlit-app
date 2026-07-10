@@ -207,7 +207,10 @@ with st.sidebar.expander("Data Prep Options", expanded=True):
     st.caption("Applied to each sample individually, along the variable axis.")
 
     st.markdown("**1. Savitzky–Golay filter**")
-    st.caption("Runs first. Best for continuous spectra (FTIR, Raman, UV/Vis); not meaningful for sparse peak tables.")
+    st.caption("Best for continuous spectra (FTIR, Raman, UV/Vis); not meaningful for sparse peak tables. "
+               "**Smoothing runs first (before normalization)** to denoise; if you choose **Derivative**, "
+               "smoothing is applied first, then the derivative is taken **after** normalization — so it "
+               "reflects real spectral shape rather than sample-to-sample intensity differences.")
     sg_mode = st.radio(
         "Savitzky–Golay mode:",
         ['None', 'Smoothing', 'Derivative'],
@@ -215,10 +218,11 @@ with st.sidebar.expander("Data Prep Options", expanded=True):
         help=(
             "**None:** no SG filter applied.\n\n"
             "**Smoothing:** fits a local polynomial in a sliding window to reduce noise "
-            "while preserving peak shape (0th derivative).\n\n"
-            "**Derivative:** computes the nth derivative of the smoothed signal — "
-            "1st derivative removes baseline offset, 2nd derivative removes sloped baselines "
-            "and resolves overlapping peaks."
+            "while preserving peak shape. Applied before normalization.\n\n"
+            "**Derivative:** first smooths (before normalization), then takes the nth derivative "
+            "AFTER normalization. 1st derivative removes baseline offset, 2nd derivative removes "
+            "sloped baselines and resolves overlapping peaks. Taking it after normalization avoids "
+            "amplifying sample-to-sample intensity/baseline differences."
         )
     )
     if sg_mode in ('Smoothing', 'Derivative'):
@@ -402,101 +406,82 @@ if norm_option == 'Internal Standard':
 # when squared (L2) or produce integer-division truncation in other methods.
 X = X_raw.astype(float).copy()
 
-# ── Savitzky–Golay spectral preprocessing (applied FIRST, per-sample row-wise) ──
-if sg_mode in ('Smoothing', 'Derivative'):
-    n_features_sg = X.shape[1]
-    # Keep a copy of the raw (pre-filter) values for the preview
-    X_before_sg = X.copy()
-    # Validate window: must be odd, > polyorder, and <= number of features
-    win = sg_window
-    if win >= n_features_sg:
-        win = n_features_sg if n_features_sg % 2 == 1 else n_features_sg - 1
-        st.warning(f"SG window reduced to {win} (cannot exceed number of variables, {n_features_sg}).")
+# ── Savitzky–Golay helper ─────────────────────────────────────────────────────
+def _apply_savgol(data_df, window, polyorder, deriv):
+    """Apply a Savitzky–Golay filter row-wise. Returns (result_df, effective_window)."""
+    n_feat = data_df.shape[1]
+    win = window
+    if win >= n_feat:
+        win = n_feat if n_feat % 2 == 1 else n_feat - 1
+        st.warning(f"SG window reduced to {win} (cannot exceed number of variables, {n_feat}).")
     if win % 2 == 0:
         win += 1
-    if win <= sg_polyorder:
+    if win <= polyorder:
         st.error(
             f"Savitzky–Golay error: window ({win}) must be greater than polynomial order "
-            f"({sg_polyorder}). Increase the window size or lower the polynomial order."
+            f"({polyorder}). Increase the window size or lower the polynomial order."
         )
         st.stop()
-    deriv = sg_deriv_order if sg_mode == 'Derivative' else 0
+    vals = savgol_filter(data_df.values, window_length=win, polyorder=polyorder,
+                         deriv=deriv, axis=1)
+    return pd.DataFrame(vals, index=data_df.index, columns=data_df.columns), win
+
+# ── SG SMOOTHING — applied FIRST, before normalization ────────────────────────
+# Smoothing denoises the raw signal so downstream normalization is computed on a
+# clean spectrum. (The derivative is applied later, AFTER normalization.)
+X_before_sg = None
+if sg_mode in ('Smoothing', 'Derivative'):
+    # In BOTH modes we first smooth. In Derivative mode the derivative itself is
+    # taken later (after normalization); here we only smooth (deriv=0).
+    X_before_sg = X.copy()
     try:
-        sg_values = savgol_filter(
-            X.values, window_length=win, polyorder=sg_polyorder,
-            deriv=deriv, axis=1
-        )
-        X = pd.DataFrame(sg_values, index=X.index, columns=X.columns)
-        if sg_mode == 'Smoothing':
-            st.success(f"Savitzky–Golay smoothing applied (window={win}, polyorder={sg_polyorder})")
-        else:
-            _ord = {1: '1st', 2: '2nd'}.get(deriv, f'{deriv}th')
-            st.success(f"Savitzky–Golay {_ord} derivative applied (window={win}, polyorder={sg_polyorder})")
+        X, win = _apply_savgol(X, sg_window, sg_polyorder, deriv=0)
+        st.success(f"Savitzky–Golay smoothing applied (window={win}, polyorder={sg_polyorder})")
     except Exception as e:
-        st.error(f"Savitzky–Golay filter failed: {e}")
+        st.error(f"Savitzky–Golay smoothing failed: {e}")
         st.stop()
 
     # ── Interactive single-spectrum preview (only if requested) ───────────────
     if sg_preview:
         st.subheader("Savitzky–Golay Spectrum Preview")
+        st.caption("Preview shows the **smoothing** step (raw vs. smoothed). "
+                   + ("The derivative you selected is applied later, after normalization."
+                      if sg_mode == 'Derivative' else ""))
 
-        # Auto-detect an x-axis: if column names parse as numbers, treat them as
-        # wavenumbers (Raman/IR). Otherwise fall back to a plain index.
+        # Auto-detect an x-axis: numeric column names → wavenumbers (Raman/IR).
         col_names = list(X.columns)
         x_numeric = pd.to_numeric(pd.Series(col_names), errors='coerce')
         if x_numeric.notna().all():
             x_axis      = x_numeric.values
             x_axis_title = "Wavenumber (cm⁻¹)"
-            # Raman/IR spectra are conventionally plotted high→low wavenumber
             reverse_x   = x_axis[0] < x_axis[-1]
         else:
             x_axis      = np.arange(len(col_names))
             x_axis_title = "Variable index"
             reverse_x   = False
 
-        # Let the user choose which sample to preview
         sample_labels = [f"{i}: {lbl}" for i, lbl in enumerate(y_raw.values)]
         sel_preview = st.selectbox(
             "Select a spectrum to preview", options=list(range(len(sample_labels))),
             format_func=lambda i: sample_labels[i], index=0
         )
 
-        raw_spec = X_before_sg.iloc[sel_preview].values
+        raw_spec  = X_before_sg.iloc[sel_preview].values
         filt_spec = X.iloc[sel_preview].values
 
         fig_prev = go.Figure()
-        # For derivatives, raw and filtered are on very different scales, so use a
-        # secondary y-axis to keep both visible.
-        if sg_mode == 'Derivative':
-            fig_prev.add_trace(go.Scatter(
-                x=x_axis, y=raw_spec, mode='lines', name='Raw',
-                line=dict(color='#999999', width=1.2), yaxis='y1'
-            ))
-            fig_prev.add_trace(go.Scatter(
-                x=x_axis, y=filt_spec, mode='lines',
-                name=f"{ {1:'1st',2:'2nd'}.get(deriv, str(deriv)+'th') } derivative",
-                line=dict(color='#2166ac', width=1.8), yaxis='y2'
-            ))
-            fig_prev.update_layout(
-                yaxis=dict(title="Raw intensity"),
-                yaxis2=dict(title="Derivative", overlaying='y', side='right',
-                            showgrid=False),
-            )
-        else:
-            fig_prev.add_trace(go.Scatter(
-                x=x_axis, y=raw_spec, mode='lines', name='Raw',
-                line=dict(color='#c0c0c0', width=1.5)
-            ))
-            fig_prev.add_trace(go.Scatter(
-                x=x_axis, y=filt_spec, mode='lines', name='Smoothed',
-                line=dict(color='#2166ac', width=1.8)
-            ))
-            fig_prev.update_layout(yaxis=dict(title="Intensity"))
-
+        fig_prev.add_trace(go.Scatter(
+            x=x_axis, y=raw_spec, mode='lines', name='Raw',
+            line=dict(color='#c0c0c0', width=1.5)
+        ))
+        fig_prev.add_trace(go.Scatter(
+            x=x_axis, y=filt_spec, mode='lines', name='Smoothed',
+            line=dict(color='#2166ac', width=1.8)
+        ))
         fig_prev.update_layout(
-            title=f"Sample '{y_raw.values[sel_preview]}' — raw vs. filtered "
-                  f"(window={win}, polyorder={sg_polyorder}"
-                  + (f", deriv={deriv}" if sg_mode == 'Derivative' else "") + ")",
+            yaxis=dict(title="Intensity"),
+            title=f"Sample '{y_raw.values[sel_preview]}' — raw vs. smoothed "
+                  f"(window={win}, polyorder={sg_polyorder})",
             xaxis_title=x_axis_title,
             height=430,
             legend=dict(orientation='h', y=1.08, x=0),
@@ -550,28 +535,39 @@ for _norm in NORM_ORDER:
 
     elif _norm == 'Unit Area (Total Sum)':
         row_sums = X.sum(axis=1)
-        zero_rows = row_sums[row_sums == 0].index
-        if len(zero_rows) > 0:
-            st.warning(f"{len(zero_rows)} sample(s) have row sum = 0 — Unit Area skipped for those rows.")
-        X = X.div(row_sums.replace(0, 1), axis=0)
+        # Treat near-zero sums as unusable (common after SG derivatives, which sum to ~0).
+        # Tolerance is relative to the typical magnitude of the data.
+        tol = 1e-9 * (X.abs().values.mean() + 1e-12)
+        bad = row_sums.abs() <= tol
+        if bad.any():
+            st.warning(f"{int(bad.sum())} sample(s) have a near-zero total sum — Unit Area left them "
+                       "unchanged (dividing would explode the values). This often happens if an SG "
+                       "derivative was applied first.")
+        safe_div = row_sums.where(~bad, 1.0)
+        X = X.div(safe_div, axis=0)
         st.success("Normalization applied: Unit Area / Total Sum (per sample)")
 
     elif _norm == 'Unit Vector (L2 Norm)':
         row_l2 = np.sqrt((X ** 2).sum(axis=1))
-        zero_rows = row_l2[row_l2 == 0].index
-        if len(zero_rows) > 0:
-            st.warning(f"{len(zero_rows)} sample(s) have L2 = 0 — Unit Vector skipped for those rows.")
-        X = X.div(row_l2.replace(0, 1), axis=0)
+        tol = 1e-9 * (X.abs().values.mean() + 1e-12)
+        bad = row_l2.abs() <= tol
+        if bad.any():
+            st.warning(f"{int(bad.sum())} sample(s) have a near-zero L2 norm — Unit Vector left them "
+                       "unchanged (dividing would explode the values).")
+        safe_div = row_l2.where(~bad, 1.0)
+        X = X.div(safe_div, axis=0)
         st.success("Normalization applied: Unit Vector / L2 Norm (per sample)")
 
     elif _norm == 'Min-Max (per sample)':
         row_min  = X.min(axis=1)
         row_max  = X.max(axis=1)
         row_span = row_max - row_min
-        const_rows = row_span[row_span == 0].index
-        if len(const_rows) > 0:
-            st.warning(f"{len(const_rows)} sample(s) are constant — Min-Max skipped for those rows.")
-        X = X.sub(row_min, axis=0).div(row_span.replace(0, 1), axis=0)
+        tol = 1e-12 * (X.abs().values.mean() + 1e-12)
+        bad = row_span.abs() <= tol
+        if bad.any():
+            st.warning(f"{int(bad.sum())} sample(s) are (near-)constant — Min-Max left them unchanged.")
+        safe_div = row_span.where(~bad, 1.0)
+        X = X.sub(row_min, axis=0).div(safe_div, axis=0)
         st.success("Normalization applied: Min-Max (per sample)")
 
     elif _norm == 'SNV':
@@ -588,6 +584,23 @@ if len(norm_options_selected) > 1:
         f"**{len(norm_options_selected)} normalization steps** were stacked, applied in order: "
         + " → ".join([n for n in NORM_ORDER if n in norm_options_selected])
     )
+
+# ── SG DERIVATIVE — applied AFTER normalization ───────────────────────────────
+# Rationale: the derivative amplifies high-frequency content. Taking it after
+# normalization means it reflects real spectral shape rather than sample-to-sample
+# intensity/baseline differences, which would otherwise be enhanced along with noise.
+# (Smoothing was already applied earlier, before normalization.)
+if sg_mode == 'Derivative':
+    try:
+        X, win_d = _apply_savgol(X, sg_window, sg_polyorder, deriv=sg_deriv_order)
+        _ord = {1: '1st', 2: '2nd'}.get(sg_deriv_order, f'{sg_deriv_order}th')
+        st.success(
+            f"Savitzky–Golay {_ord} derivative applied AFTER normalization "
+            f"(window={win_d}, polyorder={sg_polyorder})"
+        )
+    except Exception as e:
+        st.error(f"Savitzky–Golay derivative failed: {e}")
+        st.stop()
 
 y = y_raw.copy()
 
@@ -620,16 +633,16 @@ else:
     )
 
 # ── Processed Data Overview ───────────────────────────────────────────────────
-# Build a human-readable label for what was applied
+# Build a human-readable label for what was applied, in true execution order
 _steps = []
-if sg_mode == 'Smoothing':
+if sg_mode in ('Smoothing', 'Derivative'):
     _steps.append(f"SG smoothing (win={sg_window}, poly={sg_polyorder})")
-elif sg_mode == 'Derivative':
-    _ord_lbl = {1: '1st', 2: '2nd'}.get(sg_deriv_order, f'{sg_deriv_order}th')
-    _steps.append(f"SG {_ord_lbl} derivative (win={sg_window}, poly={sg_polyorder})")
 if norm_options_selected:
     for _n in [n for n in NORM_ORDER if n in norm_options_selected]:
         _steps.append(_n)
+if sg_mode == 'Derivative':
+    _ord_lbl = {1: '1st', 2: '2nd'}.get(sg_deriv_order, f'{sg_deriv_order}th')
+    _steps.append(f"SG {_ord_lbl} derivative (win={sg_window}, poly={sg_polyorder})")
 if preprocess_option == 'Z-score (autoscaling)':
     _steps.append("Z-score autoscaling")
 else:
@@ -996,6 +1009,31 @@ component_label = "PC"
 
 n_max_components = min(X_scaled.shape[0] - 1, X_scaled.shape[1])
 
+# ── Defensive check: preprocessing can produce NaN/Inf that crash PCA/PCR/PLS ──
+# Common causes: near-zero divisors after SG derivatives, overflow from very large
+# values when squared (L2), or unusual stacked-normalization combinations.
+if not np.all(np.isfinite(X_scaled)):
+    n_nan = int(np.isnan(X_scaled).sum())
+    n_inf = int(np.isinf(X_scaled).sum())
+    n_bad_rows = int((~np.isfinite(X_scaled)).any(axis=1).sum())
+    st.error(
+        f"⚠️ **Preprocessing produced invalid values** — the processed data contains "
+        f"{n_nan} NaN and {n_inf} infinite value(s) across {n_bad_rows} sample(s), which "
+        "decomposition (PCA/PCR/PLS) cannot handle.\n\n"
+        "**Most common causes:**\n"
+        "- A **normalization step divided by a near-zero value** (e.g. Unit Area or L2 on a "
+        "blank/near-empty sample, or applied after an SG derivative whose values sum to ~0).\n"
+        "- **Very large values overflowed** when squared during L2 normalization.\n"
+        "- An **unusual stack of normalization steps** interacted badly.\n\n"
+        "**How to fix:**\n"
+        "1. Try removing or simplifying the normalization step(s) in the sidebar.\n"
+        "2. If using an SG derivative, avoid pairing it with Unit Area / L2 normalization "
+        "(derivatives sum to ~0, so dividing by that sum explodes).\n"
+        "3. Exclude blank or all-zero samples in the Data Filtering step.\n"
+        "4. Check the Processed Data Overview above to see which samples went bad."
+    )
+    st.stop()
+
 if analysis_mode == "PCA (Principal Component Analysis)":
     pca_full   = PCA()
     X_scores   = pca_full.fit_transform(X_scaled)
@@ -1055,13 +1093,15 @@ std_detail_map = {
 }
 
 with st.expander(f"📋 {analysis_mode.split('(')[0].strip()} Pipeline Details", expanded=True):
-    if sg_mode == 'Smoothing':
-        _sg_detail = f"SG smoothing (window={sg_window}, polyorder={sg_polyorder})"
-    elif sg_mode == 'Derivative':
-        _ord_lbl = {1: '1st', 2: '2nd'}.get(sg_deriv_order, f'{sg_deriv_order}th')
-        _sg_detail = f"SG {_ord_lbl} derivative (window={sg_window}, polyorder={sg_polyorder})"
+    if sg_mode in ('Smoothing', 'Derivative'):
+        _sg_smooth_detail = f"SG smoothing (window={sg_window}, polyorder={sg_polyorder})"
     else:
-        _sg_detail = "None"
+        _sg_smooth_detail = "None"
+    if sg_mode == 'Derivative':
+        _ord_lbl = {1: '1st', 2: '2nd'}.get(sg_deriv_order, f'{sg_deriv_order}th')
+        _sg_deriv_detail = f"SG {_ord_lbl} derivative (window={sg_window}, polyorder={sg_polyorder})"
+    else:
+        _sg_deriv_detail = "None"
     if norm_options_selected:
         _norm_detail = "; ".join([
             norm_detail_map.get(n, n) for n in NORM_ORDER if n in norm_options_selected
@@ -1070,8 +1110,9 @@ with st.expander(f"📋 {analysis_mode.split('(')[0].strip()} Pipeline Details",
         _norm_detail = "None — no normalization applied."
     st.markdown(f"""
 **Input:** {X_scaled.shape[0]} samples × {X_scaled.shape[1]} features  
-**Row-wise 1 — Savitzky–Golay:** {_sg_detail}  
+**Row-wise 1 — SG smoothing:** {_sg_smooth_detail}  
 **Row-wise 2 — Normalization:** {_norm_detail}  
+**Row-wise 3 — SG derivative:** {_sg_deriv_detail}  
 **Column-wise — Standardization:** {std_detail_map.get(preprocess_option, preprocess_option)}  
 **Decomposition:** `{analysis_mode}`  
 
@@ -2383,6 +2424,6 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 st.caption(
-    "v35 — Optional Savitzky–Golay spectrum preview: pick a sample and see raw vs. filtered live "
-    "as you adjust window/polyorder; auto-detects wavenumber x-axis from numeric column names."
+    "v37 — Split Savitzky–Golay pipeline: smoothing runs before normalization (denoise first), "
+    "derivative runs after normalization (avoids amplifying sample-to-sample intensity differences)."
 )
