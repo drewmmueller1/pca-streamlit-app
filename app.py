@@ -279,7 +279,7 @@ with st.sidebar.expander("Data Prep Options", expanded=True):
             "**Unit Area:** divides each sample by its total sum.\n\n"
             "**Unit Vector (L2):** divides each sample by its Euclidean length.\n\n"
             "**Min-Max:** rescales each sample to [0, 1].\n\n"
-            "**Internal Standard:** divides each variable by the IS row value."
+            "**Internal Standard:** divides each sample by its own value of a chosen IS variable."
         )
     )
     # Keep a single-string form for backward-compatible IS selector logic below
@@ -378,24 +378,59 @@ if X_raw.empty:
     st.error("No numerical columns found.")
     st.stop()
 
+# ══════════════════════════════════════════════════════════════════════════════
+# VARIABLE EXCLUSION — applied to the RAW data, before any preprocessing
+# Excluding a variable here removes it from normalization sums too, which is what
+# you want when a compound is genuinely not useful (e.g. a GC-MS contaminant).
+# ══════════════════════════════════════════════════════════════════════════════
+with st.sidebar.expander("Variable Filtering", expanded=False):
+    st.caption(
+        "Remove specific variables (compounds/wavelengths) from the analysis entirely. "
+        "Applied to the **raw data before preprocessing**, so excluded variables do not "
+        "contribute to normalization totals (e.g. Unit Area sums) either."
+    )
+    excluded_variables = st.multiselect(
+        "Variables to exclude",
+        options=list(X_raw.columns),
+        default=[],
+        help="Useful in GC-MS when an identified compound is a contaminant, a solvent peak, "
+             "or otherwise not informative. Leave empty to keep all variables."
+    )
+
+if excluded_variables:
+    remaining = [c for c in X_raw.columns if c not in excluded_variables]
+    if len(remaining) < 2:
+        st.error(
+            f"Cannot exclude {len(excluded_variables)} variable(s) — only {len(remaining)} would "
+            "remain. At least 2 variables are needed for analysis."
+        )
+        st.stop()
+    X_raw = X_raw[remaining]
+    st.info(
+        f"**{len(excluded_variables)} variable(s) excluded** before preprocessing: "
+        f"{', '.join(map(str, excluded_variables[:8]))}"
+        f"{'...' if len(excluded_variables) > 8 else ''}  \n"
+        f"Analysis will use the remaining **{X_raw.shape[1]}** variable(s)."
+    )
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# INTERNAL STANDARD ROW SELECTOR
-# (IS = a specific ROW in the data, identified by its label value)
-# After transpose, column-wise data becomes row-wise, so this works uniformly.
+# INTERNAL STANDARD VARIABLE SELECTOR
+# (IS = a specific VARIABLE / column present in every sample, e.g. a spiked
+#  compound in GC-MS. Each sample is divided by its own value of that variable.)
 # ══════════════════════════════════════════════════════════════════════════════
-is_label_val = None
+is_variable = None
 if norm_option == 'Internal Standard':
-    is_label_val = st.sidebar.selectbox(
-        "Internal Standard row (label)",
-        options=sorted(y_raw.unique()),
+    is_variable = st.sidebar.selectbox(
+        "Internal Standard variable (column)",
+        options=list(X_raw.columns),
         help=(
-            "Select the label that identifies your Internal Standard row(s). "
-            "For each variable (column), all samples are divided by the IS value "
-            "for that variable — i.e., sample[col] / IS[col] for every column independently. "
-            "If multiple IS replicates exist, their values are averaged per column first. "
-            "This works identically whether your original data was row-wise or column-wise "
-            "(after transpose they are both row-wise at this point)."
+            "Select the variable (compound) that is your internal standard — the peak that was "
+            "spiked into every sample at a known amount. "
+            "Each sample is divided by **its own** value of that variable: "
+            "`sample[all variables] ÷ sample[IS variable]`. "
+            "This corrects for injection volume and instrument response differences between runs. "
+            "After normalization the IS column becomes 1.0 for every sample."
         )
     )
 
@@ -511,26 +546,29 @@ for _norm in NORM_ORDER:
         continue
 
     if _norm == 'Internal Standard':
-        if is_label_val is None:
-            st.error("Select an Internal Standard label in the sidebar.")
+        if is_variable is None:
+            st.error("Select an Internal Standard variable in the sidebar.")
             st.stop()
-        is_mask = (y_raw == is_label_val)
-        if is_mask.sum() == 0:
-            st.error(f"No rows found with label '{is_label_val}'.")
+        if is_variable not in X.columns:
+            st.error(f"Internal Standard variable '{is_variable}' not found in the data.")
             st.stop()
-        is_values = X.loc[is_mask].mean(axis=0)       # one IS value per column
-        zero_cols = is_values[is_values == 0].index.tolist()
-        if zero_cols:
+        # Each sample is divided by ITS OWN value of the IS variable (row-wise scalar).
+        is_col = X[is_variable]
+        tol = 1e-12 * (X.abs().values.mean() + 1e-12)
+        bad_rows = is_col.abs() <= tol
+        if bad_rows.any():
+            bad_labels = list(y_raw[bad_rows].astype(str))[:5]
             st.warning(
-                f"{len(zero_cols)} variable(s) have IS value = 0 and will NOT be normalized: "
-                f"{zero_cols[:5]}{'...' if len(zero_cols) > 5 else ''}"
+                f"{int(bad_rows.sum())} sample(s) have a zero/near-zero value for the internal "
+                f"standard '{is_variable}' and were left unchanged (dividing would explode the "
+                f"values). Affected sample(s): {bad_labels}"
+                f"{'...' if int(bad_rows.sum()) > 5 else ''}"
             )
-        is_values_safe = is_values.copy()
-        is_values_safe[is_values_safe == 0] = 1
-        X = X.div(is_values_safe, axis=1)
+        safe_div = is_col.where(~bad_rows, 1.0)
+        X = X.div(safe_div, axis=0)
         st.success(
             f"Normalization applied: Internal Standard "
-            f"(IS label = '{is_label_val}', {is_mask.sum()} IS row(s) averaged per variable)"
+            f"(each sample ÷ its own '{is_variable}' value)"
         )
 
     elif _norm == 'Unit Area (Total Sum)':
@@ -972,6 +1010,13 @@ if run_hierarchical:
 # DATA FILTERING
 # ══════════════════════════════════════════════════════════════════════════════
 st.subheader("Data Filtering")
+st.caption(
+    "Exclude samples by label below. To exclude **variables** (compounds), use the "
+    "**Variable Filtering** expander in the sidebar — variables are removed from the raw data "
+    "before preprocessing, so they don't contribute to normalization totals."
+    + (f"  \nCurrently excluding **{len(excluded_variables)}** variable(s)."
+       if excluded_variables else "")
+)
 unique_labels   = sorted(y.unique())
 excluded_labels = st.multiselect("Labels to exclude", unique_labels, default=[])
 mask_include    = ~y.isin(excluded_labels)
@@ -1085,7 +1130,7 @@ norm_detail_map = {
     'Unit Area (Total Sum)': "Unit Area: each sample ÷ its own total sum (per-sample).",
     'Unit Vector (L2 Norm)': "Unit Vector (L2): each sample ÷ its own Euclidean length (per-sample).",
     'Min-Max (per sample)':  "Min-Max: each sample rescaled to [0,1] using its own min/max (per-sample).",
-    'Internal Standard':     f"Internal Standard: each variable ÷ IS row avg for that variable (IS = '{is_label_val}').",
+    'Internal Standard':     f"Internal Standard: each sample ÷ its own '{is_variable}' value (per-sample).",
 }
 std_detail_map = {
     'None':                  "None — no column-wise scaling applied (PCA runs on row-wise result as-is).",
@@ -2424,6 +2469,6 @@ else:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("---")
 st.caption(
-    "v37 — Split Savitzky–Golay pipeline: smoothing runs before normalization (denoise first), "
-    "derivative runs after normalization (avoids amplifying sample-to-sample intensity differences)."
+    "v38 — Internal Standard fixed: now select a VARIABLE (column) and each sample is divided by "
+    "its own value of it (GC-MS convention). Added variable exclusion applied before preprocessing."
 )
